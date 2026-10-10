@@ -3,6 +3,7 @@ import electron from 'vite-plugin-electron/simple'
 import { defineConfig } from 'vitest/config'
 
 export default defineConfig({
+  worker: { format: 'es' },
   plugins: [
     react(),
     electron({

@@ -3,6 +3,7 @@ dist/
 dist-electron/
 release/
 coverage/
+public/pyodide/
 *.tsbuildinfo
 
 # Editors / OS

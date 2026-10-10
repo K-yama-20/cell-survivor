@@ -18,8 +18,9 @@
 
 - ゲームの面白さを最優先にし、Python文法クイズや特定構文をクリア条件にしない。
 - 全面Phaserキャンバスの上にReact製の仮想フローティングエディタを重ね、左右固定分割にしない。
-- 判断関数型 `set_ai(controller)` と、同期構文 `while ... wait_ticks(n)` の継続実行型を両立させる。Spike前に契約を変更しない。
-- シミュレーションは純TypeScript、固定30 tick/秒、AI境界6 tick、1ステージ1,800 tick、固定seedで決定論的にする。
+- 判断関数型 `set_ai(controller)` と同期の継続実行型を両立させる。継続型の行動関数はActionを提出して次の6 tick判断境界まで自動休止し、`wait_ticks(n)`は任意の追加待機に使う。
+- シミュレーションは純TypeScript、固定30 tick/秒、AI境界6 tick、1ステージ1,800 tick、固定seedで決定論的にする。攻撃頻度はPython呼び出し回数でなくゲーム側クールダウンで決める。
+- 状態確認とPython計算は固定Observation上で決定論的な実行予算を消費し、シミュレーションtickを進めない。制御を返す前に予算を超えたコードは内容を問わず一律停止する。
 - Pythonは読み取り専用ObservationとActionだけを通じてゲームへ影響する。
 - ElectronのRendererへNode.js権限を露出せず、限定されたpreload IPCだけを使う。
 - MVPはWindows 64-bitでオフライン動作し、Stop/Restart後もユーザーコードを保持する。

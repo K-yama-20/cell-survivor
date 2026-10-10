@@ -283,43 +283,35 @@ set_ai(SlimeAI())
 **用例（API案）**:
 
 ```python
-from microgame import (
-    nearest_enemy, self_position,
-    set_move, set_attack_target, wait_ticks,
-)
+from microgame import Action, act, nearest_enemy, self_position
 
 while True:
     enemy = nearest_enemy()
 
     if enemy is None:
-        set_move(0, 0)
-        set_attack_target(None)
+        act(Action())
+    elif enemy.distance < 120:
+        act(Action.flee(
+            self_position(),
+            enemy.position,
+            attack_target_id=enemy.id,
+        ))
     else:
-        set_attack_target(enemy.id)
-
-        if enemy.distance < 120:
-            me = self_position()
-            set_move(
-                me.x - enemy.position.x,
-                me.y - enemy.position.y,
-            )
-        else:
-            set_move(0, 0)
-
-    wait_ticks(6)
+        act(Action(target_enemy_id=enemy.id))
 ```
 
 - `main.py` の通常のPython文を上から実行する。ローカル変数・ループ・関数呼び出しの状態を維持する。
-- `set_move()` と `set_attack_target()` は次のActionを構築する命令。ゲーム世界をその場で更新しない。
-- `wait_ticks(n)` により、蓄積された指示を確定してPython処理を協調的に休止する。
+- `act(action)`や`attack_nearest()`等の行動関数はActionを提出し、次のAI判断境界までPythonを自動で休止する。ゲーム世界を呼び出した瞬間に更新する命令ではない。
+- `wait_ticks(n)` は行動関数に必須ではなく、次の境界より長く待つ高度なタイミング調整に使う。
 - **tick同期の定義**: 次回再開時刻は `現在tick + n` 以降の最初のAI判断境界（6の倍数）とする。例：tick 0で `wait_ticks(1)` はtick 6、`wait_ticks(7)` はtick 12で再開する。
 - `n` は正整数とする。`wait_ticks(0)`や負数は説明可能なエラーとする。
-- スクリプトが `wait_ticks()` まで到達せず無限に回った場合、実行予算を超過したエラーとして停止できなければならない。
+- 状態確認やPython計算は固定されたObservation上で実行予算を消費するが、世界のsimulation tickは進めない。
+- 行動関数、`wait_ticks()`、または処理終了で制御を返す前に実行予算を超えた場合、コード内容を特別判定せず同じ予算超過として一律停止する。
 - Python側で`while True`を使えることは要件だが、中断可能な一般Pythonの継続実行を実現する手段は **[技術検証]**。Pyodide導入だけで成立するとは仮定しない。
 
 ### 6.6 ハイブリッドでの競合防止
 
-- **同一スライムの行動制御権は1つ**: `set_ai()` で登録する判断関数型、または `set_move` 等で行動を提出する継続実行型。
+- **同一スライムの行動制御権は1つ**: `set_ai()`で登録する判断関数型、または`act(Action)`等で行動を提出する継続実行型。
 - 判断関数型を登録した後でも、メインスクリプトがログ出力・待機などを行う構成は許せる設計とする。
 - 判断関数型が有効な間、継続実行側から同じスライムへ動作命令を出そうとしたら明確なエラーを出す。最後に実行された命令で黙って上書きしない。
 - 将来複数スライムに拡張するときは、スライムID単位で制御権を持てる構造にする。
@@ -330,9 +322,9 @@ while True:
 |---|---|---|
 | 敵取得 | `nearest_enemy()` | `get_state().enemies` |
 | 回避 | `Action.flee(me, danger)` | `Action(move_x=dx, move_y=dy)` |
-| 攻撃 | `attack_nearest()` | `set_attack_target(enemy_id)` / `Action(target_enemy_id=...)` |
+| 攻撃 | `attack_nearest()` | `act(Action(target_enemy_id=...))` |
 | 位置 | `self_position()` | `get_state().position` |
-| 時間 | `wait_ticks(6)` | `get_state().tick` |
+| 時間 | 行動関数の自動待機 / `wait_ticks(n)` | `get_state().tick` |
 
 高水準APIは「使わなくても攻略できる」ことが重要。攻略を隠したブラックボックスだけにしない。
 
@@ -462,11 +454,10 @@ Electronデスクトップウィンドウ
 初回 `main.py` には、まず短くて戦闘が発生するコードを入れる。例：
 
 ```python
-from microgame import attack_nearest, wait_ticks
+from microgame import attack_nearest
 
 while True:
     attack_nearest()
-    wait_ticks(6)
 ```
 
 - 初回Runで敵へ攻撃する様子が見える。
@@ -557,8 +548,8 @@ while True:
 
 1. **Python起動**: Electron内のWorkerでPyodideがオフライン起動する。
 2. **判断関数**: `decide(state)` を同じ状態で繰り返し呼べる。
-3. **継続実行**: 本物のPythonの `while` と `wait_ticks` を、ゲームtickと同期して停止/再開できる。
-4. **終了保証**: `while True: pass`、深い再帰、長時間計算から制御を回復できる。
+3. **継続実行**: 本物のPythonの `while` と行動関数の自動待機、任意の`wait_ticks`をゲームtickと同期して停止/再開できる。
+4. **終了保証**: 特定構文の検出に依存せず、行動・待機・return前に実行予算を超えた任意のコードから制御を回復できる。
 5. **複数ファイル**: `main.py` からゲーム内 `utils.py` をimportできる。
 6. **再現性**: 同じコード・初期状態でPython状態とAction列が再現する。
 7. **安全性**: PythonからホストOS・Electron権限・任意ネットワークへ意図せず到達できないよう制限可能か検証する。

@@ -1,12 +1,17 @@
 import type { SyntheticEvent } from 'react'
 
 import { GameCanvas } from './game/rendering/GameCanvas'
+import { PythonSpikeProbe } from './python/PythonSpikeProbe'
 
 function stopGameInputPropagation(event: SyntheticEvent): void {
   event.stopPropagation()
 }
 
 export function App() {
+  const showPythonSpike = new URLSearchParams(window.location.search).has(
+    'python-spike',
+  )
+
   return (
     <main className="app-shell">
       <GameCanvas />
@@ -22,6 +27,8 @@ export function App() {
         onPointerUpCapture={stopGameInputPropagation}
         onWheelCapture={stopGameInputPropagation}
       >
+        {showPythonSpike && <PythonSpikeProbe />}
+
         <section className="hud overlay-interactive" aria-label="ゲーム状態">
           <span>HP 100 / 100</span>
           <span>TIME 00:00</span>
@@ -41,7 +48,7 @@ export function App() {
             <span className="status">foundation</span>
           </header>
           <pre>{`from microgame import *\n\nwhile True:\n    attack_nearest()\n    wait_ticks(6)`}</pre>
-          <p>Monaco EditorとPython実行環境はROADMAP Issue 03・12で追加します。</p>
+          <p>Python Workerは準備済みです。Monaco EditorはROADMAP Issue 12で追加します。</p>
         </section>
       </div>
     </main>

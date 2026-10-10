@@ -81,3 +81,19 @@ button, input, textarea { font: inherit; }
 .editor-window .status { color: #65d7a5; font-size: 12px; }
 .editor-window pre { margin: 0; padding: 26px; color: #b9e8ff; font: 15px/1.7 "Cascadia Code", Consolas, monospace; }
 .editor-window p { margin: 0; padding: 16px 20px; border-top: 1px solid rgb(255 255 255 / 8%); color: #8ca3ad; font-size: 12px; }
+
+.python-spike-probe {
+  position: absolute;
+  bottom: 20px;
+  left: 20px;
+  max-width: min(680px, calc(100vw - 40px));
+  padding: 14px 18px;
+  border: 1px solid rgb(101 215 165 / 45%);
+  border-radius: 12px;
+  background: rgb(5 15 23 / 92%);
+  box-shadow: 0 12px 40px rgb(0 0 0 / 35%);
+  font-size: 13px;
+}
+
+.python-spike-probe p { margin: 6px 0 0; color: #a8ecd1; }
+.python-spike-probe [data-status="failed"] { color: #ff9f9f; }

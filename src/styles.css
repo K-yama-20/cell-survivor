@@ -13,14 +13,22 @@ html, body, #root { width: 100%; height: 100%; margin: 0; overflow: hidden; }
 button, input, textarea { font: inherit; }
 
 .app-shell { position: relative; width: 100%; height: 100%; isolation: isolate; }
-.game-canvas { position: fixed; inset: 0; z-index: 0; }
-.game-canvas canvas { display: block; }
+.game-canvas { position: absolute; inset: 0; z-index: 0; overflow: hidden; }
+.game-canvas canvas { display: block; width: 100%; height: 100%; }
+
+.game-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  pointer-events: none;
+}
+
+.overlay-interactive { pointer-events: auto; }
 
 .hud {
-  position: fixed;
+  position: absolute;
   top: 16px;
   left: 50%;
-  z-index: 20;
   display: flex;
   gap: 18px;
   align-items: center;
@@ -47,7 +55,6 @@ button, input, textarea { font: inherit; }
   position: absolute;
   top: 96px;
   right: 42px;
-  z-index: 10;
   width: min(520px, calc(100vw - 84px));
   min-height: 330px;
   overflow: hidden;
@@ -56,6 +63,11 @@ button, input, textarea { font: inherit; }
   background: rgb(9 18 28 / 92%);
   box-shadow: 0 24px 80px rgb(0 0 0 / 44%);
   backdrop-filter: blur(18px);
+}
+
+.editor-window:focus-visible {
+  outline: 2px solid #65d7a5;
+  outline-offset: 3px;
 }
 
 .editor-window header {

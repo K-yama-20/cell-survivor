@@ -53,7 +53,3 @@ npm run build
 ## コントリビューション
 
 [AGENTS.md](AGENTS.md) と [CONTRIBUTING.md](CONTRIBUTING.md) を確認し、対応するIssueの受け入れ条件を満たす小さなPull Requestを作成してください。
-
-## ライセンス
-
-[MIT License](LICENSE)

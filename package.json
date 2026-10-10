@@ -22,7 +22,7 @@
     "pyodide": "314.0.7",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
-    "zod": "^3.25.0"
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@eslint/js": "^9.29.0",

@@ -37,3 +37,33 @@ class Controller:
 controller = Controller()
 `,
 }
+
+export const pythonContinuationSpikeFiles: PythonFiles = {
+  'main.py': `import os
+import js
+from pyodide.ffi import run_sync
+from microgame import Action, act, get_state, wait_ticks
+
+if hasattr(js, "require") or hasattr(js, "process"):
+    raise RuntimeError("Node.js globals must not be exposed to player Python")
+if os.path.exists("C:/Windows"):
+    raise RuntimeError("Host filesystem must not be mounted into Pyodide")
+try:
+    run_sync(js.fetch("https://example.com"))
+except Exception:
+    pass
+else:
+    raise RuntimeError("External network access must be blocked by CSP")
+
+def nested_loop():
+    local_target = 40
+    frozen_tick = get_state().tick
+    assert get_state().tick == frozen_tick
+    while True:
+        act(Action(target_enemy_id=local_target))
+        local_target += 1
+        wait_ticks(1)
+
+nested_loop()
+`,
+}

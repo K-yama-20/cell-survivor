@@ -6,7 +6,7 @@ import {
   type PythonDiagnostic,
   type PythonWorkerResponse,
 } from './protocol'
-import { PythonControllerRuntime } from './python-runtime'
+import { PythonRuntime } from './python-runtime'
 
 type LoadPyodide = (options: {
   indexURL: string
@@ -51,7 +51,7 @@ function diagnosticForExecution(error: unknown): PythonDiagnostic {
 
 export function createPythonWorkerHandler(options: HandlerOptions) {
   const now = options.now ?? (() => performance.now())
-  let runtime: PythonControllerRuntime | undefined
+  let runtime: PythonRuntime | undefined
   let activeSessionId: string | undefined
   let lastRequestId = -1
   let terminated = false
@@ -117,8 +117,8 @@ export function createPythonWorkerHandler(options: HandlerOptions) {
           stdout: () => undefined,
           stderr: () => undefined,
         })
-        runtime = new PythonControllerRuntime(pyodide)
-        runtime.initialize(request.payload.files)
+        runtime = new PythonRuntime(pyodide)
+        runtime.initialize(request.payload.files, request.payload.config)
         options.postMessage({
           ...identity,
           type: 'initialized',
@@ -143,7 +143,10 @@ export function createPythonWorkerHandler(options: HandlerOptions) {
         options.postMessage({
           ...identity,
           type: 'boundary-result',
-          payload: { action: runtime.decide(request.payload.observation) },
+          payload: await runtime.boundary(
+            request.payload.tick,
+            request.payload.observation,
+          ),
         })
       }
     } catch (error) {

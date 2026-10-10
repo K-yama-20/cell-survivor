@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
-import { AI_BOUNDARY_TICKS, STAGE_DURATION_TICKS, TICKS_PER_SECOND } from './constants'
+import {
+  AI_BOUNDARY_TICKS,
+  PLAYER_ATTACK_COOLDOWN_TICKS,
+  STAGE_DURATION_TICKS,
+  TICKS_PER_SECOND,
+} from './constants'
 
 describe('simulation timing contract', () => {
   it('matches the canonical MVP specification', () => {
@@ -8,5 +13,6 @@ describe('simulation timing contract', () => {
     expect(AI_BOUNDARY_TICKS).toBe(6)
     expect(STAGE_DURATION_TICKS).toBe(1_800)
     expect(STAGE_DURATION_TICKS / TICKS_PER_SECOND).toBe(60)
+    expect(PLAYER_ATTACK_COOLDOWN_TICKS).toBe(15)
   })
 })

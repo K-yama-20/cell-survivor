@@ -2,6 +2,8 @@ import { app, BrowserWindow, shell } from 'electron'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 
+import { createSecureWindowPreferences } from './window-preferences'
+
 const currentDirectory = path.dirname(fileURLToPath(import.meta.url))
 const rendererDirectory = path.join(currentDirectory, '../dist')
 
@@ -13,12 +15,9 @@ function createWindow(): void {
     minHeight: 540,
     backgroundColor: '#071018',
     show: false,
-    webPreferences: {
-      preload: path.join(currentDirectory, 'preload.mjs'),
-      nodeIntegration: false,
-      contextIsolation: true,
-      sandbox: true,
-    },
+    webPreferences: createSecureWindowPreferences(
+      path.join(currentDirectory, 'preload.mjs'),
+    ),
   })
 
   window.once('ready-to-show', () => window.show())

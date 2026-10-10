@@ -167,8 +167,8 @@ type ActionDTO = {
 
 ```text
 Renderer → Simulation Worker: init(seed), advance(actions, count), reset(), snapshot()
-Renderer → Python Worker: initialize(files, config), boundary(observation), terminate()
-Python Worker → Renderer: boundary_result(action, diagnostics), runtime_error(...), stdout(...)
+Renderer → Python Worker: initialize(files, config), boundary(tick, observation), terminate()
+Python Worker → Renderer: boundary_result(action, mode, yieldReason, resumeTick, budgetUsed), diagnostic(...)
 Simulation Worker → Renderer: state_snapshot(...), game_result(...)
 ```
 
@@ -186,11 +186,11 @@ Simulation Worker → Renderer: state_snapshot(...), game_result(...)
 - **内部表現**: すべての操作を1境界あたり`ActionDTO` 1個へ集約する。物理更新自体は同一経路。
 - **時間と予算**: 状態確認とPython計算は決定論的な実行予算を消費するが、Observationとsimulation tickは固定する。行動・待機・return・終了で制御を返す前に予算を使い切ったコードは、内容を問わず同じ理由で一律停止する。
 
-### 5.2 Pyodide導入で確認済みと言えること / まだ言えないこと
+### 5.2 Pyodide + JSPIによる継続実行（Issue #4で技術Go）
 
-PyodideにはWeb Worker内でPythonを評価する使い方がある。ただし**通常の同期Python関数を呼ぶだけで、任意の`while True`を途中から再開できるわけではない**。行動関数の自動待機と`wait_ticks()`の双方で、再開可能な処理単位の設計が別途必要。
+Pyodide 314.0.7のJavaScript Promise Integration（JSPI）を使う。Workerはユーザープログラムを`runPythonAsync()`から開始し、`act()`/`wait_ticks()`内部の`pyodide.ffi.run_sync()`がWorker側Promiseを待つ。WebAssembly/Pythonスタックは中断中も保持され、Player APIへ`async`/`await`を露出しない。
 
-**最優先Spike**（Issue #3〜#4相当）:
+**Issue #3〜#4で確認済み**:
 
 1. Windows Electron製品ビルドからローカル同梱Pyodideをオフラインロードできる。
 2. `decide(state)`を1000回以上呼び出し、同じAIオブジェクトが状態を維持する。
@@ -202,7 +202,7 @@ PyodideにはWeb Worker内でPythonを評価する使い方がある。ただし
 8. 許可しない外部通信・ホストファイルアクセスの到達可能性を検証し、権限境界を確認する。
 9. 再現テストに合格し、デプロイ時にCDNへ依存しない。
 
-**実装案の比較対象**: (a)制約付き同期継続を安全な中断点へ変換するアダプタ、(b)明示的なPythonコルーチンでの協調スケジューリング、(c)必要なら別のPythonランタイム/実行モデル。**(b)は`async/await`等の記法変更を伴うため、既存の同期的な行動関数/`wait_ticks`契約を勝手に変更してはならない。** Spikeが失敗した場合は選択肢と影響をIssue/ADRへ明記し、合意してAPI文書を更新する。
+決定論的な実行予算はPlayerファイルのPython `call`/`line` trace eventを数え、Spike初期値を1境界50,000 eventとする。C実装内などtrace eventを生成しない長時間処理は実時間watchdog（初期値2,000 ms）がWorkerを強制終了する。前者はゲーム規則、後者はUI/アプリ保護であり混同しない。詳細・代替案・残存リスクは`docs/adr/ADR-003-python-continuations.md`を正とする。
 
 ### 5.3 一般Pythonの自由度と限界
 
@@ -408,10 +408,10 @@ micro-survivor/
 
 最低限CIで`lint` / `typecheck` / unit tests / build、主要PRで統合テストを実行。Python Workerのリソース・隔離検証は単体テストだけで代替しない。
 
-### 10.2 性能と限界値（まだ実測していない）
+### 10.2 性能と限界値
 
 - 描画目標60FPS、30TPSを基本とするが、性能評価環境と許容遅延は後続Issueで固定する。
-- Python Worker初期ロード時間、メモリ、最大コードサイズ、ログ量、エディタ数の実用範囲はSpikeで実測し閾値を決める。
+- Python Worker初期ロードとController境界時間はADR-002/003で初回実測済み。最大コードサイズ、ログ量、エディタ数と最終閾値は後続Issueで決める。
 - `timeout`は**エラー処理の上限**であってゲーム内時間ではない。閾値がPC性能差で結果に影響するケースは「成功した決定論的実行」の保証対象外と明記する。
 
 ---
@@ -422,7 +422,7 @@ micro-survivor/
 |---|---|---|
 | ADR-001 Electron + React + Phaser | 第一候補 | Windowsオフライン起動、UI/2Dパフォーマンス |
 | ADR-002 Pyodide Web Worker | 第一候補 | moduleロード、isolated runner、Python自由度 |
-| ADR-003 行動自動待機・継続実行・実行予算 | **未決・最重要** | 同期行動API、任意`wait_ticks`、決定論的予算を一般Python構文と組み合わせたPoC |
+| ADR-003 行動自動待機・継続実行・実行予算 | **Accepted / Issue #4技術Go** | JSPI同期行動API、任意`wait_ticks`、trace event予算、watchdog |
 | ADR-004 Sim Worker / fixed tick | 本書の設計決定案 | 同一Action列で再現・性能測定 |
 | ADR-005 安全モデル | **未決・販売前必須** | レンダラー/Worker権限確認、悪意あるPythonテスト |
 
@@ -435,9 +435,9 @@ micro-survivor/
 - [ ] PhaserなしでSimulation Coreの1,800 tickを再現・テストできる。
 - [ ] 同じコード/固定seed/同じランタイムから同じ結果が出る（検証対象のPythonコード）。
 - [ ] PythonからHPやPhaserオブジェクトを直接書き換えられず、Actionのみが反映される。
-- [ ] 判断関数と、行動関数が自動待機する同期継続実行の両方を実際に動かせる。
-- [ ] 競合するコントローラの命令を明確に拒否する。
-- [ ] 予算内に制御を返さない任意のコードを同じ規則で停止し、ゲーム本体とファイル内容を失わず再実行できる。
+- [x] 判断関数と、行動関数が自動待機する同期継続実行の両方を実際に動かせる。
+- [x] 競合するコントローラの命令を明確に拒否する。
+- [x] 予算内に制御を返さない任意のコードを同じ規則で停止し、ゲーム本体とファイル内容を失わず再実行できる。
 - [ ] `main.py`+追加モジュールのimportが機能する。
 - [ ] 全画面ゲーム + 複数フローティングエディタ + カメラ操作が独立する。
 - [ ] Windows製品ビルドをオフラインで起動・プレイ・保存できる。

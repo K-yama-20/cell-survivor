@@ -18,13 +18,13 @@ describe('Python Worker protocol boundary', () => {
       sessionId: 'session-a',
       requestId: 2,
       type: 'boundary',
-      payload: { observation: {} },
+      payload: { tick: 0, observation: {} },
     })
     await handle({
       sessionId: 'session-a',
       requestId: 1,
       type: 'boundary',
-      payload: { observation: {} },
+      payload: { tick: 0, observation: {} },
     })
 
     expect(loadPyodide).not.toHaveBeenCalled()

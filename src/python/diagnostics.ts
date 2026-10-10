@@ -10,16 +10,15 @@ function lastMatch(pattern: RegExp, value: string): RegExpExecArray | undefined 
 export function pythonDiagnosticFromError(error: unknown): PythonDiagnostic {
   const traceback = error instanceof Error ? error.message : String(error)
   const location = lastMatch(/File "([^"]+)", line (\d+)/g, traceback)
-  const exception = lastMatch(
-    /^([A-Za-z_][\w.]*(?:Error|Exception)):\s*(.*)$/gm,
-    traceback,
-  )
+  const exception = lastMatch(/^([A-Za-z_][\w.]*(?:Error|Exception|Exceeded)):\s*(.*)$/gm, traceback)
   const rawFileName = location?.[1]
   const fileName = rawFileName?.split(/[\\/]/).at(-1)
 
   return {
     kind: 'python',
-    name: exception?.[1] ?? (error instanceof Error ? error.name : 'PythonError'),
+    name:
+      exception?.[1]?.split('.').at(-1) ??
+      (error instanceof Error ? error.name : 'PythonError'),
     message: exception?.[2] || traceback.split('\n').at(-1) || 'Python execution failed',
     traceback,
     ...(fileName ? { fileName } : {}),

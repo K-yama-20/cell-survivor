@@ -1,8 +1,9 @@
-import { app, BrowserWindow, net, protocol, shell } from 'electron'
+import { app, BrowserWindow, net, protocol, session, shell } from 'electron'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import path from 'node:path'
 
 import { resolveAppAssetPath } from './app-protocol'
+import { CONTENT_SECURITY_POLICY } from './security-policy'
 import { createSecureWindowPreferences } from './window-preferences'
 
 const currentDirectory = path.dirname(fileURLToPath(import.meta.url))
@@ -52,6 +53,18 @@ function createWindow(): void {
 }
 
 app.whenReady().then(() => {
+  session.defaultSession.setPermissionCheckHandler(() => false)
+  session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => {
+    callback(false)
+  })
+  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+    callback({
+      responseHeaders: {
+        ...details.responseHeaders,
+        'Content-Security-Policy': [CONTENT_SECURITY_POLICY],
+      },
+    })
+  })
   protocol.handle('app', (request) => {
     const assetPath = resolveAppAssetPath(request.url)
     if (assetPath === undefined) {

@@ -36,17 +36,20 @@ describe('offline Pyodide Worker integration', () => {
 
       for (let call = 1; call <= PYTHON_SPIKE_CALL_COUNT; call += 1) {
         await request(call + 1, 'boundary', {
+          tick: (call - 1) * 6,
           observation: { expected_call: call, target_enemy_id: 7 },
         })
       }
 
       await request(PYTHON_SPIKE_CALL_COUNT + 2, 'boundary', {
+        tick: PYTHON_SPIKE_CALL_COUNT * 6,
         observation: {
           expected_call: PYTHON_SPIKE_CALL_COUNT + 1,
           fail: true,
         },
       })
       await request(PYTHON_SPIKE_CALL_COUNT + 3, 'boundary', {
+        tick: (PYTHON_SPIKE_CALL_COUNT + 1) * 6,
         observation: {
           expected_call: PYTHON_SPIKE_CALL_COUNT + 2,
           target_enemy_id: 9,

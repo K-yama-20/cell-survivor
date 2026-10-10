@@ -3,7 +3,7 @@
 > **ステータス**: MVP公開API設計 v0.2（2026-10-10）
 > **関連文書**: [PRODUCT.md](./PRODUCT.md) / [GAME_DESIGN.md](./GAME_DESIGN.md) / [ARCHITECTURE.md](./ARCHITECTURE.md)  
 > **対象**: ゲーム内エディタから書く**本物のPython**とゲームの間の公開契約。  
-> **重要**: ここに記した関数名・意味・例外は**実装目標の契約案**であり、現時点で動くコードではない。特に行動関数の同期的な自動待機、`wait_ticks()`の追加待機、決定論的な実行予算と停止は**[Spike必須]**。技術検証の結果で記法の変更が必要なら、承認後にこの文書と関連仕様書を同時更新する。
+> **重要**: ここに記した公開API全体はMVP契約案だが、行動関数の同期的な自動待機、`wait_ticks()`の追加待機、決定論的な実行予算と停止はIssue #4で技術成立を確認済み。実装方式と残存リスクは`docs/adr/ADR-003-python-continuations.md`を参照。
 
 ---
 
@@ -130,10 +130,10 @@ set_ai(SlimeAI())
 
 - `n`は`bool`を除く正整数。0、負数、小数、文字列は`InvalidWaitError`。
 - `wait_ticks`は継続型スクリプトの実行文脈でのみ使う。`decide`の内部から呼ぶと`ControlModeError`。
-- 状態確認、ループ、関数呼び出し、再帰、コレクション操作等は実行予算を消費するが、simulation tickは進めない。予算の計数単位と初期値はIssue #4のSpikeで決める。
+- 状態確認、ループ、関数呼び出し、再帰、コレクション操作等は実行予算を消費するが、simulation tickは進めない。計数単位はプレイヤーファイルに発生するPythonの`call`/`line` trace eventで、Spike初期値は1境界50,000 event。
 - 行動関数、`wait_ticks()`、`decide()`のreturn、または処理終了で制御を返す前に予算を超えた場合、特定構文や関数名を検出せず、すべて同じ`ExecutionBudgetExceeded`として停止する。
 - ゲーム結果に使う予算判定は同じコードと入力で同じ結果になる決定論的な単位とし、実時間watchdogはWorker/アプリ保護の最終手段として分離する。
-- 行動関数と`wait_ticks`によるスタック/ローカル変数保持の実装方式は**[Spike必須]**。本物の通常Pythonのままで実現できないと分かった場合、黙って`async`へ仕様変更しない。
+- 行動関数と`wait_ticks`によるスタック/ローカル変数保持にはPyodide JSPIを使う。Player APIは通常の同期Pythonのままで、内部の`run_sync()`だけがWorker側Promiseを待つ。
 
 ### 3.4 同時にAIを監視する「ハイブリッド」例
 
@@ -343,7 +343,7 @@ print(s.tick, s.hp, len(s.enemies))
 
 `get_state().position`の便利版。スライム自身の現在境界位置を返す。名前の`self`はPythonクラスの`self`とは無関係。
 
-### 5.5 `act(action: Action) -> None` **[Spike必須]**
+### 5.5 `act(action: Action) -> None`
 
 継続実行型の低水準行動関数。完全なActionを提出し、次のAI判断境界まで自動で待つ。
 
@@ -357,7 +357,7 @@ act(Action(move_x=-1, move_y=0, target_enemy_id=5))
 - `act`から戻った時点では次の境界のObservationへ更新されている。
 - Controllerモードや`decide()`内では`ControlModeError`。ControllerはActionをreturnする。
 
-### 5.6 `attack_nearest() -> int | None` **[Spike必須]**
+### 5.6 `attack_nearest() -> int | None`
 
 継続実行型向けの**最も近い敵への標的指定**ヘルパー。
 
@@ -372,7 +372,7 @@ id_or_none = attack_nearest()
 - このヘルパーが提出するActionの移動入力は`(0, 0)`。移動しながら狙う場合は`act(Action(...))`またはControllerを使う。
 - Controllerモードや`decide`内では`ControlModeError`。
 
-### 5.7 `wait_ticks(n: int) -> None` **[Spike必須]**
+### 5.7 `wait_ticks(n: int) -> None`
 
 継続スクリプトの協調的な中断・再開命令。詳細なタイミングは§3.3。
 
@@ -386,7 +386,7 @@ while True:
 - 通常の行動ループに`wait_ticks(6)`を毎回書く必要はない。
 - 制御を返さず実行予算を超えた処理は、コード内容を問わず一律停止する。
 - `n`が不正なら`InvalidWaitError`。`decide`内なら`ControlModeError`。
-- 正しい実装方式が実証されるまでは、ゲーム全体のMVP実現性を保証しない。
+- 通常関数、ネストした呼び出し、クラス、ループの状態保持はIssue #4の製品版Electron Spikeで実証済み。
 
 ---
 
@@ -427,7 +427,7 @@ print("HP:", get_state().hp)
 - 外部監視でtimeout等を検出したら、Workerを中断/破棄し、実行をエラー終了する。
 - CPUが遅いPCでtimeoutに達したrunは、決定論が保証される**正常完走したrun**ではない。
 - エラー後のRestartはPythonメモリを破棄し、固定seedで新規実行する。
-- **制限値は未決**。Spikeで最大ファイルサイズ、実行時間/判断、Workerのメモリ、ログ上限を実測して固定する。
+- Spike初期値は実行予算50,000 trace event/境界、実時間watchdog 2,000 ms/境界。最終UX値、最大ファイルサイズ、Workerメモリ、ログ上限はIssue #18で負荷試験して固定する。
 
 ---
 
@@ -550,18 +550,16 @@ set_ai(SlimeAI())
 | API-16 | 状態確認やPython計算中はObservationとsimulation tickが変化せず、実行予算だけを消費する |
 | API-17 | 6tickごとに攻撃対象を提出しても、実際の発射頻度はゲーム側クールダウンを超えない |
 
-実装前にAPI-01、API-05、API-10、API-15、API-16は技術Spikeで検証し、不成立ならアーキテクチャの代替案と仕様差分を先に検討する。
+API-01、API-05、API-10、API-15、API-16はIssue #4の技術Spikeで成立を確認した。公開オブジェクトの完全な契約テストはIssue #17で仕上げる。
 
 ---
 
 ## 11. 未決事項 / Spike後に確定する項目
 
-1. **行動関数の自動待機と同期`wait_ticks`の継続・中断・再開・キャンセル方式**（最優先、Go/No-Goゲート）。
-2. Pythonの正式バージョン、Pyodideのpinバージョン、エラー行番号の品質。
-3. 決定論的な実行予算の計数単位・初期値、実時間watchdog、メモリ上限、最大ソースサイズ、ログ表示/保存の上限。
-4. 標準ライブラリの保証セットと安全なモジュール制限の実装可能性。
-5. Python`random`への固定seed注入方式と対応範囲（MVP必須ではない）。
-6. APIオブジェクトの本番実装（`dataclass`等）および性能計測。
-7. 射程・HP・移動速度・敵出現の細かな数値は`GAME_DESIGN.md`に従いプレイテストで調整。
+1. 実行予算50,000 trace eventとwatchdog 2,000 msの最終UX調整、メモリ上限、最大ソースサイズ、ログ表示/保存の上限。
+2. 標準ライブラリの保証セットと安全なモジュール制限の実装可能性。
+3. Python`random`への固定seed注入方式と対応範囲（MVP必須ではない）。
+4. APIオブジェクトの本番実装（`dataclass`等）および性能計測。
+5. 射程・HP・移動速度・敵出現の細かな数値は`GAME_DESIGN.md`に従いプレイテストで調整。
 
 **原則**: 「Pythonを学ぶための制約」は最小限に、ゲーム世界の公平性・再現性・OSの安全のための制限は明示する。技術上の妥協は隠さず、プレイヤーの体験とAPI互換性への影響を記録する。

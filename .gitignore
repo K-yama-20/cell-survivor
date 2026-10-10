@@ -1,0 +1,17 @@
+node_modules/
+dist/
+dist-electron/
+release/
+coverage/
+*.tsbuildinfo
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Local game data and logs
+user-data/
+logs/
+*.log

@@ -1,0 +1,46 @@
+name: Bug report
+description: 再現可能な不具合を報告する
+title: "[Bug] "
+labels: ["type:bug"]
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: 概要
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 再現手順
+      value: "1. \n2. \n3. "
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期待する動作
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: 実際の動作
+    validations:
+      required: true
+  - type: input
+    id: revision
+    attributes:
+      label: バージョン / commit
+  - type: textarea
+    id: environment
+    attributes:
+      label: 実行環境
+      description: Windows、Node.js、配布/開発ビルドなど。
+  - type: checkboxes
+    id: sensitive
+    attributes:
+      label: セキュリティ確認
+      options:
+        - label: セキュリティ脆弱性ではありません（脆弱性はSecurity Advisoryへ報告してください）
+          required: true

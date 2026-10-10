@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/K-yama-20/cell-survivor/security/advisories/new
+    about: 脆弱性は公開Issueではなく非公開で報告してください。

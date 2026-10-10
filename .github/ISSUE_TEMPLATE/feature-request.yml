@@ -1,0 +1,29 @@
+name: Feature request
+description: ゲーム体験または開発体験の改善案
+title: "[Feature] "
+labels: ["type:feature"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 解決したい問題
+      description: どのプレイヤーが、どの場面で困るかを記載してください。
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 提案
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 代替案 / Out of scope
+  - type: checkboxes
+    id: principles
+    attributes:
+      label: 仕様との整合
+      options:
+        - label: ゲーム性を優先し、特定のPython構文を強制しません
+        - label: MVP範囲とROADMAPを確認しました

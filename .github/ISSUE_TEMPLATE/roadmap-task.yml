@@ -1,0 +1,47 @@
+name: Roadmap task
+description: ROADMAPに基づく実装・検証タスク
+title: "[Roadmap] "
+labels: ["priority:P0"]
+body:
+  - type: textarea
+    id: objective
+    attributes:
+      label: Objective
+      description: プレイヤーまたは開発上の成果を1つに絞って記載してください。
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+      description: 実装・調査する範囲を記載してください。
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance Criteria
+      description: 外部から検証できる完了条件をチェックリストで記載してください。
+      value: "- [ ] "
+    validations:
+      required: true
+  - type: textarea
+    id: verification
+    attributes:
+      label: Tests / Verification
+      description: 自動テスト、手動確認、計測方法を記載してください。
+    validations:
+      required: true
+  - type: input
+    id: dependencies
+    attributes:
+      label: Dependencies
+      description: 先行Issue番号。なければ「なし」。
+  - type: textarea
+    id: out-of-scope
+    attributes:
+      label: Out of scope
+  - type: textarea
+    id: docs
+    attributes:
+      label: Docs / ADR to update

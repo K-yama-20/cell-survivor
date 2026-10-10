@@ -1,9 +1,9 @@
 # PYTHON_API.md — Micro Survivor（仮題）プレイヤー向けPython API仕様
 
-> **ステータス**: MVP公開API設計 v0.1（2026-10-09）  
+> **ステータス**: MVP公開API設計 v0.2（2026-10-10）
 > **関連文書**: [PRODUCT.md](./PRODUCT.md) / [GAME_DESIGN.md](./GAME_DESIGN.md) / [ARCHITECTURE.md](./ARCHITECTURE.md)  
 > **対象**: ゲーム内エディタから書く**本物のPython**とゲームの間の公開契約。  
-> **重要**: ここに記した関数名・意味・例外は**実装目標の契約案**であり、現時点で動くコードではない。特に同期`wait_ticks()`の継続実行・停止は**[Spike必須]**。技術検証の結果で記法の変更が必要なら、承認後にこの文書と関連仕様書を同時更新する。
+> **重要**: ここに記した関数名・意味・例外は**実装目標の契約案**であり、現時点で動くコードではない。特に行動関数の同期的な自動待機、`wait_ticks()`の追加待機、決定論的な実行予算と停止は**[Spike必須]**。技術検証の結果で記法の変更が必要なら、承認後にこの文書と関連仕様書を同時更新する。
 
 ---
 
@@ -26,42 +26,36 @@
 ### 2.1 サンプルA — 継続実行型（初回の`main.py`候補）
 
 ```python
-from microgame import attack_nearest, wait_ticks
+from microgame import attack_nearest
 
 while True:
     attack_nearest()
-    wait_ticks(6)
 ```
 
-スライムは6tickごとに近い敵を狙う。攻撃はゲーム側の射程・クールダウンに従い、自動で発射される。これだけでは後半の群れに対処しにくく、改良したくなる想定。
+`attack_nearest()`はActionを提出して次の判断境界まで自動で待つ。スライムは6tickごとに近い敵を狙うが、実際の発射はゲーム側の射程・クールダウンに従う。これだけでは後半の群れに対処しにくく、改良したくなる想定。
 
-**注意**: この例は`wait_ticks()`の同期形式がSpikeに合格したときの最終形。実行方式が変わる場合はサンプルも統一して改訂する。
+**注意**: この例は行動関数の同期的な自動待機がSpikeに合格したときの最終形。実行方式が変わる場合はサンプルも統一して改訂する。
 
 ### 2.2 サンプルB — 条件分岐を追加
 
 ```python
 from microgame import (
-    nearest_enemy, self_position,
-    set_move, set_attack_target, wait_ticks,
+    Action, act, nearest_enemy, self_position,
 )
 
 while True:
     enemy = nearest_enemy()
 
     if enemy is None:
-        set_move(0, 0)
-        set_attack_target(None)
+        act(Action())
+    elif enemy.distance < 120:
+        act(Action.flee(
+            self_position(),
+            enemy.position,
+            attack_target_id=enemy.id,
+        ))
     else:
-        set_attack_target(enemy.id)
-
-        if enemy.distance < 120:
-            me = self_position()
-            set_move(me.x - enemy.position.x,
-                     me.y - enemy.position.y)
-        else:
-            set_move(0, 0)
-
-    wait_ticks(6)
+        act(Action(target_enemy_id=enemy.id))
 ```
 
 「敵が近いときに逃げる」を`if`で表現している。プレイヤーが120を80/160等に変えると同じseedで違いを比較できる。
@@ -100,8 +94,9 @@ set_ai(SlimeAI())
 - ステージ時間: **30 simulation tick/秒、1800 tick = 60秒**。
 - AI境界: **6 tickごと**。`tick 0, 6, 12, ... , 1794`。
 - `Observation`は境界tickの開始時点の読み取り専用スナップショット。
-- Python処理が完了するまでゲームtickは進まない。
+- 状態確認とPython計算は決定論的な実行予算を消費するが、Pythonが制御を返すまでゲームtickは進まず、同じObservationを読み続ける。
 - 有効な行動は次のAI境界まで保持される。描画FPSやPCの処理時間で判断回数を増減しない。
+- 継続型の行動関数はActionを提出した時点で自動休止し、次の6 tick境界で再開する。`wait_ticks()`は任意の追加待機であり、通常の行動ループには不要。
 - 境界中、継続実行スクリプトの期限が来ていれば先に再開し、`set_ai()`されたAIがあればその後`decide()`を呼ぶ。Python Workerで直列化する。
 - 1ステージのseedは固定。MVPにseed選択/変更APIを設けない。
 
@@ -109,18 +104,20 @@ set_ai(SlimeAI())
 
 | スタイル | 主な方法 | 制御権 |
 |---|---|---|
-| **Manual / 継続型** | `while True`＋`set_move` / `set_attack_target`＋`wait_ticks` | 継続スクリプトがActionを提出 |
+| **Manual / 継続型** | `while True`＋`act(Action)` / 高水準行動関数。行動時に自動待機 | 継続スクリプトがActionを提出 |
 | **Controller / 判断型** | `set_ai(obj)`＋`obj.decide(state) -> Action` | `decide`の返り値のみがAction |
 
 - 1体のスライムについて、同時に行動を決める経路は常に1つ。
-- `set_ai()`を登録している間、継続側から`set_move`等の行動APIを使うと`ControlModeError`。一方、監視・ログ用の`get_state()`/`print()`/`wait_ticks()`は使える。
-- `decide()`の中で`set_move`/`set_attack_target`/`attack_nearest`を使うのも`ControlModeError`。結果を`Action`として返す。
+- `set_ai()`を登録している間、継続側から`act`等の行動APIを使うと`ControlModeError`。一方、監視・ログ用の`get_state()`/`print()`/`wait_ticks()`は使える。
+- `decide()`の中で`act`/`attack_nearest`等の自動待機する行動関数を使うのも`ControlModeError`。結果を`Action`として返す。
 - MVPの`set_ai(obj)`は**実行開始時（初回tick境界の初期化処理）に一度登録**する。動的なAI交換/解除はMVP対象外。[設計決定案]
 - 複数スライムの制御はMVP後の拡張で、今はスライムIDをプレイヤーが選ぶAPIを用意しない。
 
-### 3.3 継続スクリプトの中断
+### 3.3 継続スクリプトの中断と実行予算
 
-`wait_ticks(n)`は通常の秒単位スリープではなく、**「ゲーム内で少なくともn tick進んだ最初のAI境界まで継続処理を中断する」**命令。
+`act(action)`、`attack_nearest()`等の行動関数はActionを確定し、**次のAI判断境界まで継続処理を自動で中断する**。例えばtick 0の`act(...)`はtick 0〜5に適用するActionを提出し、関数呼び出しの続きはtick 6で再開する。
+
+`wait_ticks(n)`は行動ごとに書く必須APIではない。通常の行動関数による1境界待機よりも長く、または明示的に何もせず待つ場合の高度なタイミング調整として、**「ゲーム内で少なくともn tick進んだ最初のAI境界まで継続処理を中断する」**。
 
 ```text
 現tick=0  → wait_ticks(1) → 再開tick=6
@@ -129,12 +126,14 @@ set_ai(SlimeAI())
 現tick=6  → wait_ticks(7) → 再開tick=18
 ```
 
-数式：`resume_tick = 6 * ceil((current_tick + n) / 6)`（`n >= 1`）。`wait_ticks()`呼び出し時点までに蓄積された移動/標的指定をその境界の行動として確定し、再開まで保持する。
+数式：`resume_tick = 6 * ceil((current_tick + n) / 6)`（`n >= 1`）。`wait_ticks()`中は最後に確定したActionを再開まで保持する。
 
 - `n`は`bool`を除く正整数。0、負数、小数、文字列は`InvalidWaitError`。
 - `wait_ticks`は継続型スクリプトの実行文脈でのみ使う。`decide`の内部から呼ぶと`ControlModeError`。
-- 無限ループでも`wait_ticks`を呼ばない場合、実行監視の対象。実行時間上限超過等ではWorkerを破棄してエラー停止する。
-- `wait_ticks`によるスタック/ローカル変数保持の実装方式は**[Spike必須]**。本物の通常Pythonのままで実現できないと分かった場合、黙って`async`へ仕様変更しない。
+- 状態確認、ループ、関数呼び出し、再帰、コレクション操作等は実行予算を消費するが、simulation tickは進めない。予算の計数単位と初期値はIssue #4のSpikeで決める。
+- 行動関数、`wait_ticks()`、`decide()`のreturn、または処理終了で制御を返す前に予算を超えた場合、特定構文や関数名を検出せず、すべて同じ`ExecutionBudgetExceeded`として停止する。
+- ゲーム結果に使う予算判定は同じコードと入力で同じ結果になる決定論的な単位とし、実時間watchdogはWorker/アプリ保護の最終手段として分離する。
+- 行動関数と`wait_ticks`によるスタック/ローカル変数保持の実装方式は**[Spike必須]**。本物の通常Pythonのままで実現できないと分かった場合、黙って`async`へ仕様変更しない。
 
 ### 3.4 同時にAIを監視する「ハイブリッド」例
 
@@ -287,7 +286,8 @@ Action()                                     # 移動なし・標的なし
 | `target_enemy_id`が`bool`/float/string | 無行動Actionに置換し診断ログ |
 | 実行中に対象が撃破される | 移動を継続、射撃対象のみ失う。次回判断で更新可能 |
 | `decide()`が例外送出 | **実行エラーとして一時停止**、トレースバックを表示 |
-| 過重計算/timeout | Worker中断・必要なら再生成して実行エラー停止 |
+| 実行予算超過 | コード内容を問わず一律停止。Worker中断・必要なら再生成 |
+| 実時間watchdog超過 | アプリ保護のためWorkerを強制停止。ゲーム規則上の予算判定とは区別 |
 
 無効Actionは行動を壊さない**入力検証警告**として扱い、Python例外そのものとは区別する。ゲーム側でActionを構造検証し、Pythonからのオブジェクトをそのままシミュレーションメモリへ渡さない。
 
@@ -343,36 +343,21 @@ print(s.tick, s.hp, len(s.enemies))
 
 `get_state().position`の便利版。スライム自身の現在境界位置を返す。名前の`self`はPythonクラスの`self`とは無関係。
 
-### 5.5 `set_move(dx: float, dy: float) -> None`
+### 5.5 `act(action: Action) -> None` **[Spike必須]**
 
-継続実行型の**次のActionの移動成分**を設定する。
-
-```python
-set_move(-1, 0)  # 左
-set_move(0, 0)   # 停止
-```
-
-- これは**命令バッファの更新**であり、呼び出した瞬間にスライム座標は変わらない。
-- 同じ境界内で2回呼んだ場合は最後の値を採用。
-- `set_attack_target`の設定は上書きしない。
-- 不正な引数は`GameAPIError`（NaN/Infinityを含む）。
-- Controllerモードや`decide()`内では`ControlModeError`。
-
-### 5.6 `set_attack_target(enemy_id: int | None) -> None`
-
-継続実行型の次のActionの攻撃対象を設定する。
+継続実行型の低水準行動関数。完全なActionを提出し、次のAI判断境界まで自動で待つ。
 
 ```python
-set_attack_target(5)
-set_attack_target(None)  # 攻撃しない
+act(Action(move_x=-1, move_y=0, target_enemy_id=5))
 ```
 
-- 確定時にIDの存在・生存を検証する。
-- 新たにターゲットを指定しても、そのtickの攻撃クールダウン条件が満たされなければ弾は出ない。
-- `set_move`は上書きしない。
-- 不正な型は`GameAPIError`。Controllerモードや`decide`内では`ControlModeError`。
+- Actionは現在の境界で検証・確定し、次の6 simulation tickに適用する。
+- 呼び出した瞬間に座標・HP・敵状態を直接変更しない。
+- 移動と攻撃対象を同じActionで同時に指定できる。
+- `act`から戻った時点では次の境界のObservationへ更新されている。
+- Controllerモードや`decide()`内では`ControlModeError`。ControllerはActionをreturnする。
 
-### 5.7 `attack_nearest() -> int | None`
+### 5.6 `attack_nearest() -> int | None` **[Spike必須]**
 
 継続実行型向けの**最も近い敵への標的指定**ヘルパー。
 
@@ -380,24 +365,26 @@ set_attack_target(None)  # 攻撃しない
 id_or_none = attack_nearest()
 ```
 
-- `nearest_enemy()`を確認し、存在すれば`set_attack_target(enemy.id)`、不在なら`set_attack_target(None)`を呼ぶのと等価。
+- `nearest_enemy()`を確認し、存在すれば`Action(target_enemy_id=enemy.id)`、不在なら`Action()`を`act()`するのと等価。
 - ターゲットのID、または敵がいなければ`None`を返す。
+- Action提出後は次のAI判断境界まで自動で待つ。
 - **即時に攻撃を実行する命令ではない**。実際の発射判定はSimulation側。
-- 移動設定を変更しない。
+- このヘルパーが提出するActionの移動入力は`(0, 0)`。移動しながら狙う場合は`act(Action(...))`またはControllerを使う。
 - Controllerモードや`decide`内では`ControlModeError`。
 
-### 5.8 `wait_ticks(n: int) -> None` **[Spike必須]**
+### 5.7 `wait_ticks(n: int) -> None` **[Spike必須]**
 
 継続スクリプトの協調的な中断・再開命令。詳細なタイミングは§3.3。
 
 ```python
 while True:
     attack_nearest()
-    wait_ticks(6)
+    wait_ticks(24)  # 自動待機6tickに加え、さらに間隔を空けたい場合
 ```
 
 - 見かけ上は同期関数。**Pythonのコールスタックとローカル変数を保って再開できる必要がある**。
-- `wait_ticks`を通過しない無限ループは許可するが、実行監視で止められる必要がある（攻略上の有用性はない）。
+- 通常の行動ループに`wait_ticks(6)`を毎回書く必要はない。
+- 制御を返さず実行予算を超えた処理は、コード内容を問わず一律停止する。
 - `n`が不正なら`InvalidWaitError`。`decide`内なら`ControlModeError`。
 - 正しい実装方式が実証されるまでは、ゲーム全体のMVP実現性を保証しない。
 
@@ -411,11 +398,13 @@ while True:
 class GameAPIError(Exception): ...
 class ControlModeError(GameAPIError): ...
 class InvalidWaitError(GameAPIError): ...
+class ExecutionBudgetExceeded(GameAPIError): ...
 ```
 
 - `GameAPIError`: API呼び出しの不正、初期化外での利用、`set_ai`対象不正など。
 - `ControlModeError`: Controller型とManual型の命令競合、`decide`内の`wait_ticks`等。
 - `InvalidWaitError`: `wait_ticks(n)`の引数不正。
+- `ExecutionBudgetExceeded`: 行動・待機・return・終了で制御を返す前に、決定論的な実行予算を使い切った。
 - Python組み込みの`SyntaxError`/`ImportError`/`ZeroDivisionError`等はできる限り本来の名称で表示。
 - `InvalidActionWarning`はユーザーへ返す**診断イベント名**の案であり、必ずしもPython内に投げる例外ではない。
 - 重大な実行時エラーはゲームを停止し、**ファイル名・行番号・例外型・内容・現在tick**を表示する。
@@ -505,17 +494,17 @@ set_ai(SlimeAI())
 ### 8.1 Actionの保持と変更
 
 - Actionは**AI境界でのみ確定**し、その後6 tick継続する。
-- Manual型では`set_move`と`set_attack_target`の命令バッファを別々に保持する。変更しない成分は直前の設定を引き継ぐ。
+- Manual型では`act(action)`または高水準行動関数が毎回Action全体を提出し、その呼び出しが次の境界まで自動待機する。部分更新バッファは持たない。
 - Callback型では**毎回Action全体を返す**。前回Actionを部分更新しない。
 - Actionはゲーム更新で使うだけ。プレイヤーが`Action`を返しても直接敵HPを書き換えることはできない。
-- Manual型スクリプトが終了した場合、最後に確定したActionを保持し、ゲームは通常通り進行する[MVP設計決定案]。明示的に停止したい場合は`set_move(0,0)`などを使う。
+- Manual型スクリプトが終了した場合、最後に確定したActionを保持し、ゲームは通常通り進行する[MVP設計決定案]。明示的に移動・攻撃を止めたい場合は`act(Action())`を使う。
 
 ### 8.2 境界ごとの処理順序
 
 1. `Observation`生成（同一境界内では不変）。
-2. `wait_ticks`から再開可能な継続処理を実行（必要なら再度休止）。
+2. 行動関数または`wait_ticks`から再開可能な継続処理を、実行予算内で実行（必要なら再度休止）。
 3. Controllerが登録されていれば`decide(observation)`を実行。
-4. Manualなら命令バッファから、Controllerなら戻り値からActionを組み立てる。
+4. Manualなら行動関数の引数から、Controllerなら戻り値からActionを組み立てる。
 5. 不正Actionを検証/無行動化し、次の6 tickをSim側で更新。
 
 どの段階でもシミュレーションが裏で進行してObservationが古くなることはない。
@@ -543,7 +532,7 @@ set_ai(SlimeAI())
 
 | ID | 条件 |
 |---|---|
-| API-01 | `main.py`のサンプルAで継続攻撃し、行動が6tick単位で変化する |
+| API-01 | `main.py`のサンプルAが明示的な`wait_ticks`なしで継続し、`attack_nearest()`ごとに6tick進む |
 | API-02 | サンプルBで近距離条件により回避方向が変わる |
 | API-03 | サンプルCで`decide`がtick 0/6/12...に呼ばれる |
 | API-04 | 同じ`SlimeAI`インスタンスが残り、`self`の状態が維持される |
@@ -552,22 +541,24 @@ set_ai(SlimeAI())
 | API-07 | `enemies`の順序と等距離の`nearest_enemy`判定がID昇順 |
 | API-08 | NaN/不正ID/None等で無行動に置換、ログが出てワールドは破損しない |
 | API-09 | `main.py`から`utils.py`をimportして正常実行できる |
-| API-10 | `while True: pass`をStopでき、Electron UI・編集内容が保たれる |
+| API-10 | 行動・待機・return前に予算を超える複数種類のコードを同じ規則で停止でき、Electron UI・編集内容が保たれる |
 | API-11 | 同一ソース・固定seed・許可された入力で複数回の実行結果が再現する |
 | API-12 | Pythonエラーのファイル名・行番号・tickを取得できる |
 | API-13 | ゲームとPythonをオフラインWindows配布ビルドから起動できる |
 | API-14 | camera zoom/editor位置変更は観測/Action/戦闘結果に影響しない |
 | API-15 | ハイブリッド例で監視ログと判断関数を直列実行できる |
+| API-16 | 状態確認やPython計算中はObservationとsimulation tickが変化せず、実行予算だけを消費する |
+| API-17 | 6tickごとに攻撃対象を提出しても、実際の発射頻度はゲーム側クールダウンを超えない |
 
-実装前にAPI-05、API-10、API-15は技術Spikeで検証し、不成立ならアーキテクチャの代替案と仕様差分を先に検討する。
+実装前にAPI-01、API-05、API-10、API-15、API-16は技術Spikeで検証し、不成立ならアーキテクチャの代替案と仕様差分を先に検討する。
 
 ---
 
 ## 11. 未決事項 / Spike後に確定する項目
 
-1. **同期`wait_ticks`の継続・中断・再開・キャンセル方式**（最優先、Go/No-Goゲート）。
+1. **行動関数の自動待機と同期`wait_ticks`の継続・中断・再開・キャンセル方式**（最優先、Go/No-Goゲート）。
 2. Pythonの正式バージョン、Pyodideのpinバージョン、エラー行番号の品質。
-3. CPU/メモリ上限、最大ソースサイズ、ログ表示/保存の上限。
+3. 決定論的な実行予算の計数単位・初期値、実時間watchdog、メモリ上限、最大ソースサイズ、ログ表示/保存の上限。
 4. 標準ライブラリの保証セットと安全なモジュール制限の実装可能性。
 5. Python`random`への固定seed注入方式と対応範囲（MVP必須ではない）。
 6. APIオブジェクトの本番実装（`dataclass`等）および性能計測。

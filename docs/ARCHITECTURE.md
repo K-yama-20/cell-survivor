@@ -15,7 +15,7 @@
 | 世界 | スライム1体 / 細菌 / 1ステージ / 60秒生存 [確定] |
 | 描画・アプリ | Electron + React + Phaserを第一候補、Monaco Editorを採用する案 [確定：第一候補] |
 | Python | プレイヤーが本物のPythonを可能な範囲で使う。Pyodide第一候補 [確定：要件、方式は検証待ち] |
-| AI | `decide(state)`判断関数型と`while ... wait_ticks()`継続実行型を両方使える [確定：要件] |
+| AI | `decide(state)`判断関数型と、行動関数が次の6 tick境界まで自動待機する継続実行型を両方使える [確定：要件] |
 | 時間 | 固定30 tick/秒、AI判断境界は6 tickごと、1800 tickで60秒 [既存GAME_DESIGNの初期値案] |
 | RNG | ステージ固有seed固定。MVPにseed変更UIはない [確定] |
 | UI | 画面全面のゲーム + 自由配置/複数表示のフローティングエディタ、ズーム・パン [確定] |
@@ -122,7 +122,7 @@ tick 1800: 結果確定（最終tickの被害でHP0なら失敗）
 境界の処理順序 [設計決定案]:
 
 1. Simulation Workerから境界tickのワールドスナップショットを取得する。
-2. Python Worker内の期限到達済み継続処理を再開し、必要な行動命令の提出・`wait_ticks()`での再休止を完了させる。
+2. Python Worker内の期限到達済み継続処理を再開し、実行予算内で行動提出・任意の`wait_ticks()`・終了のいずれかまで進める。行動関数は次の判断境界まで自動で休止する。
 3. 登録済みの`decide(observation)`があれば、同じスナップショットで1回だけ実行する。継続処理と判断関数を同時に動作させず、1つのPython Workerで直列化する。
 4. 行動が妥当か検証し、**制御権は1つ**の規則に従って適用する（`PYTHON_API.md`参照）。
 5. 行動を固定して6回だけSimulation Coreをstepする（各tick内部の細かい順序は`GAME_DESIGN.md` §5.2）。
@@ -181,27 +181,28 @@ Simulation Worker → Renderer: state_snapshot(...), game_result(...)
 ### 5.1 二つの表面APIと一つの内部行動表現
 
 - **判断関数型**: `set_ai(controller)`で登録し、`controller.decide(state) -> Action`を6 tickごとに呼び出す。状態は同一Pythonオブジェクトに保持できる。
-- **継続実行型**: `while ... wait_ticks(n)`の制御フローを保ち、`set_move()`/`set_attack_target()`で次の行動を提出する。`wait_ticks(n)`はゲームtickと同期した協調的中断点である。
-- **ハイブリッド**: メインスクリプトでAIを登録したあと`wait_ticks()`でログや監視を実行できる。ただし登録済みAIと継続側の行動命令は競合させない（行動命令を発した場合は`ControlModeError`）。
+- **継続実行型**: `act(Action)`や`attack_nearest()`等で完全なActionを提出する。行動関数は次の6 tick判断境界まで同期的に自動休止し、`wait_ticks(n)`は追加待機や無行動待機にだけ使う。
+- **ハイブリッド**: メインスクリプトでAIを登録したあと`wait_ticks()`でログや監視を実行できる。ただし登録済みAIと継続側の行動命令は競合させない（`act()`等を呼んだ場合は`ControlModeError`）。
 - **内部表現**: すべての操作を1境界あたり`ActionDTO` 1個へ集約する。物理更新自体は同一経路。
+- **時間と予算**: 状態確認とPython計算は決定論的な実行予算を消費するが、Observationとsimulation tickは固定する。行動・待機・return・終了で制御を返す前に予算を使い切ったコードは、内容を問わず同じ理由で一律停止する。
 
 ### 5.2 Pyodide導入で確認済みと言えること / まだ言えないこと
 
-PyodideにはWeb Worker内でPythonを評価する使い方がある。ただし**通常の同期Python関数`wait_ticks()`を呼ぶだけで、任意の`while True`を途中から再開できるわけではない**。再開可能な処理単位の設計が別途必要。
+PyodideにはWeb Worker内でPythonを評価する使い方がある。ただし**通常の同期Python関数を呼ぶだけで、任意の`while True`を途中から再開できるわけではない**。行動関数の自動待機と`wait_ticks()`の双方で、再開可能な処理単位の設計が別途必要。
 
 **最優先Spike**（Issue #3〜#4相当）:
 
 1. Windows Electron製品ビルドからローカル同梱Pyodideをオフラインロードできる。
 2. `decide(state)`を1000回以上呼び出し、同じAIオブジェクトが状態を維持する。
-3. `while True`と同期構文の`wait_ticks(6)`で、ループ中のローカル変数を保ったまま中断/再開できる方式を実証する。
-4. `wait_ticks(1)`がtick 6、`wait_ticks(7)`がtick 12で再開する。
-5. `while True: pass`、深い再帰、長時間計算、Python例外を停止/検出し、編集内容を失わずにRestart可能。
+3. `while True`内の行動関数が、ループ中のローカル変数を保ったまま次の6 tick判断境界まで自動で中断/再開できる方式を実証する。
+4. 任意の`wait_ticks(1)`がtick 6、`wait_ticks(7)`がtick 12で再開する。
+5. 状態確認やPython計算中は世界を進めず実行予算だけを消費し、予算内に制御を返さない複数種類のコードを内容によらず一律停止できる。実時間watchdogでも編集内容を失わずRestart可能。
 6. `utils.py`等のimport、`math`/`dataclasses`/クラス/関数/再帰が動く。
 7. ゲーム・Python・エディタの処理を分離し、ロック時もUIでStopを操作できる。
 8. 許可しない外部通信・ホストファイルアクセスの到達可能性を検証し、権限境界を確認する。
 9. 再現テストに合格し、デプロイ時にCDNへ依存しない。
 
-**実装案の比較対象**: (a)制約付き同期継続を安全な中断点へ変換するアダプタ、(b)明示的なPythonコルーチンでの協調スケジューリング、(c)必要なら別のPythonランタイム/実行モデル。**(b)は`async/await`等の記法変更を伴うため、既存の同期`wait_ticks`契約を勝手に変更してはならない。** Spikeが失敗した場合は選択肢と影響をIssue/ADRへ明記し、合意してAPI文書を更新する。
+**実装案の比較対象**: (a)制約付き同期継続を安全な中断点へ変換するアダプタ、(b)明示的なPythonコルーチンでの協調スケジューリング、(c)必要なら別のPythonランタイム/実行モデル。**(b)は`async/await`等の記法変更を伴うため、既存の同期的な行動関数/`wait_ticks`契約を勝手に変更してはならない。** Spikeが失敗した場合は選択肢と影響をIssue/ADRへ明記し、合意してAPI文書を更新する。
 
 ### 5.3 一般Pythonの自由度と限界
 
@@ -396,8 +397,10 @@ micro-survivor/
 | 時間 | 0〜1799を正しく処理し、60秒境界で勝敗確定、最終被ダメージを優先 |
 | Action | NaN/Infinity/未知ID/不正型で状態破損しない |
 | Runner | `decide()`を連続呼び出し、クラス状態が保持される |
+| Runner | `act(Action)`や高水準行動関数が明示的な待機なしでtick 0→6に中断・再開する |
 | Runner | `wait_ticks(1/6/7)`をtick 6/6/12に同期して再開 |
-| 停止 | `while True: pass`でゲームUI応答とStop/Restartが維持される |
+| 実行予算 | 状態確認・計算中に世界は進まず、異なる非yieldコードが内容によらず同じ予算超過で停止する |
+| 停止 | 実時間watchdog超過時もゲームUI応答とStop/Restartが維持される |
 | ワークスペース | `main.py`から`utils.py`をimport、ファイル保存/再起動復元 |
 | UI | 複数エディタのドラッグ/リサイズ/前面化/復旧。ズームと入力フォーカスの分離 |
 | 決定論 | Window移動/ズーム/Pauseの有無でゲームstate hashが変わらない |
@@ -419,7 +422,7 @@ micro-survivor/
 |---|---|---|
 | ADR-001 Electron + React + Phaser | 第一候補 | Windowsオフライン起動、UI/2Dパフォーマンス |
 | ADR-002 Pyodide Web Worker | 第一候補 | moduleロード、isolated runner、Python自由度 |
-| ADR-003 継続実行の中断/再開 | **未決・最重要** | 同期`wait_ticks`と一般Python構文を組み合わせたPoC |
+| ADR-003 行動自動待機・継続実行・実行予算 | **未決・最重要** | 同期行動API、任意`wait_ticks`、決定論的予算を一般Python構文と組み合わせたPoC |
 | ADR-004 Sim Worker / fixed tick | 本書の設計決定案 | 同一Action列で再現・性能測定 |
 | ADR-005 安全モデル | **未決・販売前必須** | レンダラー/Worker権限確認、悪意あるPythonテスト |
 
@@ -432,9 +435,9 @@ micro-survivor/
 - [ ] PhaserなしでSimulation Coreの1,800 tickを再現・テストできる。
 - [ ] 同じコード/固定seed/同じランタイムから同じ結果が出る（検証対象のPythonコード）。
 - [ ] PythonからHPやPhaserオブジェクトを直接書き換えられず、Actionのみが反映される。
-- [ ] 判断関数と同期`wait_ticks`継続実行の両方を実際に動かせる。
+- [ ] 判断関数と、行動関数が自動待機する同期継続実行の両方を実際に動かせる。
 - [ ] 競合するコントローラの命令を明確に拒否する。
-- [ ] 無限ループを停止し、ゲーム本体とファイル内容を失わず再実行できる。
+- [ ] 予算内に制御を返さない任意のコードを同じ規則で停止し、ゲーム本体とファイル内容を失わず再実行できる。
 - [ ] `main.py`+追加モジュールのimportが機能する。
 - [ ] 全画面ゲーム + 複数フローティングエディタ + カメラ操作が独立する。
 - [ ] Windows製品ビルドをオフラインで起動・プレイ・保存できる。

@@ -85,7 +85,7 @@ try {
   const page = await findPage(port)
   socket = await openSocket(page.webSocketDebuggerUrl)
   const evaluate = createEvaluator(socket)
-  const deadline = Date.now() + 30_000
+  const deadline = Date.now() + 60_000
   while (Date.now() < deadline) {
     const status = await evaluate(
       `(() => {

@@ -6,7 +6,7 @@ import {
   type PythonDiagnostic,
   type PythonWorkerResponse,
 } from './protocol'
-import { PythonControllerRuntime } from './python-runtime'
+import { PythonRuntime } from './python-runtime'
 
 type LoadPyodide = (options: {
   indexURL: string
@@ -25,7 +25,7 @@ type EnvelopeIdentity = Readonly<{ sessionId: string; requestId: number }>
 
 function readEnvelopeIdentity(value: unknown): EnvelopeIdentity {
   if (typeof value !== 'object' || value === null) {
-    return { sessionId: 'invalid', requestId: 0 }
+    return { sessionId: 'invalid', requestId: 1 }
   }
   const candidate = value as { sessionId?: unknown; requestId?: unknown }
   return {
@@ -36,9 +36,10 @@ function readEnvelopeIdentity(value: unknown): EnvelopeIdentity {
     requestId:
       typeof candidate.requestId === 'number' &&
       Number.isInteger(candidate.requestId) &&
-      candidate.requestId >= 0
+      candidate.requestId > 0 &&
+      candidate.requestId <= Number.MAX_SAFE_INTEGER
         ? candidate.requestId
-        : 0,
+        : 1,
   }
 }
 
@@ -51,7 +52,7 @@ function diagnosticForExecution(error: unknown): PythonDiagnostic {
 
 export function createPythonWorkerHandler(options: HandlerOptions) {
   const now = options.now ?? (() => performance.now())
-  let runtime: PythonControllerRuntime | undefined
+  let runtime: PythonRuntime | undefined
   let activeSessionId: string | undefined
   let lastRequestId = -1
   let terminated = false
@@ -73,6 +74,8 @@ export function createPythonWorkerHandler(options: HandlerOptions) {
     if (!parsed.success) {
       postDiagnostic(identity, {
         kind: 'protocol',
+        code: 'INVALID_WORKER_REQUEST',
+        severity: 'error',
         name: 'InvalidWorkerRequest',
         message: parsed.error.issues.map((issue) => issue.message).join('; '),
       })
@@ -83,14 +86,28 @@ export function createPythonWorkerHandler(options: HandlerOptions) {
     if (terminated) {
       postDiagnostic(identity, {
         kind: 'protocol',
+        code: 'WORKER_TERMINATED',
+        severity: 'error',
         name: 'WorkerTerminated',
         message: 'The Python Worker has already terminated',
+      })
+      return
+    }
+    if (runtime === undefined && request.type !== 'initialize') {
+      postDiagnostic(identity, {
+        kind: 'protocol',
+        code: 'WORKER_NOT_INITIALIZED',
+        severity: 'error',
+        name: 'WorkerNotInitialized',
+        message: 'The Python Worker must be initialized before other requests',
       })
       return
     }
     if (activeSessionId !== undefined && request.sessionId !== activeSessionId) {
       postDiagnostic(identity, {
         kind: 'protocol',
+        code: 'SESSION_MISMATCH',
+        severity: 'error',
         name: 'SessionMismatch',
         message: 'Worker messages must use the initialized sessionId',
       })
@@ -99,26 +116,36 @@ export function createPythonWorkerHandler(options: HandlerOptions) {
     if (request.requestId <= lastRequestId) {
       postDiagnostic(identity, {
         kind: 'protocol',
+        code: 'NON_MONOTONIC_REQUEST_ID',
+        severity: 'error',
         name: 'NonMonotonicRequestId',
         message: 'requestId must increase monotonically',
       })
       return
     }
 
-    activeSessionId = request.sessionId
-    lastRequestId = request.requestId
-
     try {
       if (request.type === 'initialize') {
-        if (runtime !== undefined) throw new Error('Worker is already initialized')
+        if (runtime !== undefined) {
+          postDiagnostic(identity, {
+            kind: 'protocol',
+            code: 'WORKER_ALREADY_INITIALIZED',
+            severity: 'error',
+            name: 'WorkerAlreadyInitialized',
+            message: 'The Python Worker is already initialized',
+          })
+          return
+        }
+        activeSessionId = request.sessionId
+        lastRequestId = request.requestId
         const startedAt = now()
         const pyodide = await options.loadPyodide({
           indexURL: request.payload.runtimeBaseUrl,
           stdout: () => undefined,
           stderr: () => undefined,
         })
-        runtime = new PythonControllerRuntime(pyodide)
-        runtime.initialize(request.payload.files)
+        runtime = new PythonRuntime(pyodide)
+        runtime.initialize(request.payload.files, request.payload.config)
         options.postMessage({
           ...identity,
           type: 'initialized',
@@ -129,6 +156,8 @@ export function createPythonWorkerHandler(options: HandlerOptions) {
         })
         return
       }
+
+      lastRequestId = request.requestId
 
       if (request.type === 'terminate') {
         terminated = true
@@ -143,7 +172,10 @@ export function createPythonWorkerHandler(options: HandlerOptions) {
         options.postMessage({
           ...identity,
           type: 'boundary-result',
-          payload: { action: runtime.decide(request.payload.observation) },
+          payload: await runtime.boundary(
+            request.payload.tick,
+            request.payload.observation,
+          ),
         })
       }
     } catch (error) {

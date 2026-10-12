@@ -17,7 +17,7 @@
 
 1. **ゲームの面白さが最優先**。Python文法の強制クイズや特定構文によるクリア判定は行わない。
 2. **全画面Phaser + Reactの仮想フローティングエディタ**。左右固定分割を採用しない。
-3. **ハイブリッドPython**。`set_ai(obj)`での判断関数型と、行動関数が次の6 tick判断境界まで自動待機する継続実行型の両方が使える。`wait_ticks(n)`は任意の追加待機として残し、実装方式はSpikeで検証する。
+3. **ハイブリッドPython**。`set_ai(obj)`での判断関数型と、行動関数が次の6 tick判断境界まで自動待機する継続実行型の両方が使える。`wait_ticks(n)`は任意の追加待機として残し、JSPI実装はIssue #4で技術Go。
 4. **純TypeScriptの固定tick決定論シミュレーション**。30 tick/秒、AI境界は6 tickごと、ステージは1,800 tick。固定seedを変更するUI/APIはMVPに設けない。
 5. **Windowsオフライン動作**。Python実行環境は配布ビルドに同梱。アプリを正常停止・再起動でき、ユーザーのコードが消えない。
 6. **Pythonがゲーム内部を直接操作しない**。観測 `Observation` を読み、行動 `Action` を提出する。Electron権限は隔離する。
@@ -41,6 +41,8 @@
 - Issue数は20件を目安とし、Spikeの結果や複雑さによって分割・追加は許可する。「20に合わせるための巨大Issue」は作らない。
 
 ### Gate A — 最重要: Python実行方式
+
+**結果: Go（Issue 03〜05で検証・契約固定済み）**。Pyodide JSPI方式、決定論的実行予算、実時間watchdog、共有DTO/Envelope契約を採用する。ADR-002〜004を判断記録とする。
 
 - Electron製品相当の実行環境で、**CDNなし**にローカル同梱PyodideをWorkerでロードできる。
 - 同じAIインスタンスの`decide()`を1,000回以上呼び、クラス変数・インスタンス状態が維持される。
@@ -159,11 +161,11 @@ tests/e2e/
 - **目的**: 第一候補ランタイムのオフライン実行と、判断関数型APIの成立性を実測する。
 - **実装**: バージョンを固定してPyodide資産をローカル同梱し、Rendererから専用Workerへ`initialize/boundary/terminate`を送る実験。Pythonの`decide()`、クラス状態、基礎的な標準ライブラリを確認。ロード時間・メモリの観測手順も整備。
 - **受け入れ条件**:
-  - [ ] ネットワークOFFでPython Workerを起動でき、CDNアクセス不要である。
-  - [ ] 同一インスタンスの`decide()`を1,000回以上呼んでも状態が継続し、Actionを返す。
-  - [ ] `math`、関数、クラス、再帰、`main.py`から`utils.py`のimportを検証できる。
-  - [ ] Worker内の例外がアプリ全体を落とさず、ファイル名/行番号等の診断へ変換される。
-  - [ ] PoCコード・計測・確認した制約を`docs/adr/ADR-002-pyodide.md`に残す。
+  - [x] ネットワークOFFでPython Workerを起動でき、CDNアクセス不要である。
+  - [x] 同一インスタンスの`decide()`を1,000回以上呼んでも状態が継続し、Actionを返す。
+  - [x] `math`、関数、クラス、再帰、`main.py`から`utils.py`のimportを検証できる。
+  - [x] Worker内の例外がアプリ全体を落とさず、ファイル名/行番号等の診断へ変換される。
+  - [x] PoCコード・計測・確認した制約を`docs/adr/ADR-002-pyodide.md`に残す。
 - **検証**: Worker統合テスト + オフライン手動検証。
 - **依存**: 01, 02。 **Out of scope**: 本番の完全なゲームループ・任意Pythonの安全性保証。
 
@@ -171,16 +173,17 @@ tests/e2e/
 
 - **目的**: ハイブリッド実行の最大リスクをゲーム本体の開発前に決着させる（**Gate A最重要**）。
 - **実装**: 行動関数が次の6 tick判断境界まで同期的に自動待機する再開機構を実験し、関数内のローカル変数・クラス・呼び出し状態を保持。任意の`wait_ticks`、世界を進めない決定論的実行予算、内容に依存しない予算超過停止、実時間watchdog、Worker再生成、権限/ネットワーク/OSアクセスを評価する。判断関数との同居と制御権も試す。
+- **結果**: Pyodide JSPI方式を採用し、`docs/adr/ADR-003-python-continuations.md`で**技術Go**。初期値は50,000 trace event/境界、watchdog 2,000 ms。
 - **受け入れ条件**:
-  - [ ] tick 0の`act(Action)`または高水準行動関数が、明示的な待機なしでActionを提出しtick 6から再開する。
-  - [ ] 任意の同期`wait_ticks`で中断/再開できる。0→`wait_ticks(1)`=tick6、0→`wait_ticks(7)`=tick12。
-  - [ ] ループ内ローカル変数、関数呼び出し、クラス状態を再開後も保持できる。
-  - [ ] 状態確認とPython計算はObservationとsimulation tickを進めず、決定論的な実行予算だけを消費する。
-  - [ ] tight loop、深い再帰、長時間計算等の予算内に制御を返さないコードを、構文別の特例なしで同じ予算超過として一律停止する。
-  - [ ] 実時間watchdog超過もStopでき、コードを失わず新しいWorkerでRestartできる。
-  - [ ] `decide()`と継続処理を直列実行し、同一スライムの行動競合を検知できる。
-  - [ ] ホストファイル・ネットワーク・JS bridgeなどの許可/遮断の実測と残存リスクを`docs/adr/ADR-003-python-continuations.md`に記録する。
-  - [ ] **Go/No-Goを明文化**。失敗時は代替案と変更影響を提示し、05以降の依存作業を止める。
+  - [x] tick 0の`act(Action)`または高水準行動関数が、明示的な待機なしでActionを提出しtick 6から再開する。
+  - [x] 任意の同期`wait_ticks`で中断/再開できる。0→`wait_ticks(1)`=tick6、0→`wait_ticks(7)`=tick12。
+  - [x] ループ内ローカル変数、関数呼び出し、クラス状態を再開後も保持できる。
+  - [x] 状態確認とPython計算はObservationとsimulation tickを進めず、決定論的な実行予算だけを消費する。
+  - [x] tight loop、深い再帰、長時間計算等の予算内に制御を返さないコードを、構文別の特例なしで同じ予算超過として一律停止する。
+  - [x] 実時間watchdog超過もStopでき、コードを失わず新しいWorkerでRestartできる。
+  - [x] `decide()`と継続処理を直列実行し、同一スライムの行動競合を検知できる。
+  - [x] ホストファイル・ネットワーク・JS bridgeなどの許可/遮断の実測と残存リスクを`docs/adr/ADR-003-python-continuations.md`に記録する。
+  - [x] **Go/No-Goを明文化**。失敗時は代替案と変更影響を提示し、05以降の依存作業を止める。
 - **検証**: 再現PoC、強制停止の操作試験、権限試験、決定論的Action列の複数回比較。
 - **依存**: 03。 **Out of scope**: 仕様を無断で非同期APIへ変更すること、無条件の完全サンドボックス保証。
 
@@ -188,12 +191,13 @@ tests/e2e/
 
 - **目的**: Python/Simulation間のAPI契約を固定し、後続Issueが並行開発可能な境界を作る。
 - **実装**: `ObservationDTO`/`ActionDTO`、`Envelope(sessionId, requestId, type, payload)`、Zod等での検証、型定義、型とログ/エラー仕様のテスト。`microgame`の`Observation`/`Action`への変換契約、実行方式に関するADRを確定。
+- **結果**: `src/shared/contracts.ts`をDTO正本とし、frozen Python型への変換、統一Action検証、protocol/validation/python/budget診断を実装。ADR-004でGate AをGoとして確定。
 - **受け入れ条件**:
-  - [ ] 既存`PYTHON_API.md`の`Vec2`/`EnemyView`/`Observation`/`Action`へ対応するDTOと変換契約がある。
-  - [ ] NaN/Infinity/不正ID/不正型/古いsessionId/不正requestIdが安全に拒否される。
-  - [ ] Controller/Manualで一つのAction表現と制御権ルールを共有する。
-  - [ ] 行動関数の自動待機、任意の`wait_ticks`、実行予算超過をWorker境界で識別できる契約と診断がある。
-  - [ ] Gate AがGoで、ADRと仕様の矛盾が解消されている。
+  - [x] 既存`PYTHON_API.md`の`Vec2`/`EnemyView`/`Observation`/`Action`へ対応するDTOと変換契約がある。
+  - [x] NaN/Infinity/不正ID/不正型/古いsessionId/不正requestIdが安全に拒否される。
+  - [x] Controller/Manualで一つのAction表現と制御権ルールを共有する。
+  - [x] 行動関数の自動待機、任意の`wait_ticks`、実行予算超過をWorker境界で識別できる契約と診断がある。
+  - [x] Gate AがGoで、ADRと仕様の矛盾が解消されている。
 - **検証**: JSON転送・スキーマ境界・型契約の単体テスト。
 - **依存**: 03, 04。 **Out of scope**: ゲーム世界の描画や戦闘実装。
 
@@ -478,8 +482,8 @@ GitHub Issue #<実Issue番号> を実装してください。
 
 | 未決事項 | いつ決めるか | 判断材料 |
 |---|---|---|
-| 行動関数の同期的な自動待機と`wait_ticks`継続実行の実現方法 | **Issue 04 / Gate A** | 実証PoC、構文互換性、停止・再開 |
-| Pyodide同梱・オフライン動作とElectron security境界 | **Issue 03–04** | 製品相当ビルド、通信/権限実験 |
+| 行動関数の同期的な自動待機と`wait_ticks`継続実行の実現方法 | **Issue 04でJSPI採用済み** | ADR-003、製品Electron継続テスト |
+| Pyodide同梱・オフライン動作とElectron security境界 | **Issue 03–04で初期検証済み、18で再監査** | 製品相当ビルド、通信/権限実験 |
 | Pythonの実行予算・タイムアウト値・メモリ対策 | **Issue 03–04で測定、18で確定** | 一般的PC実測と悪性/誤用ケース |
 | Phaser画面・エディタ同時表示の性能限界 | **Issue 02, 13, 15** | ウィンドウ数とFPSの実測 |
 | HP/敵速度/出現数/弾パラメータ | **Issue 07–10で仮決定、19で調整** | 初心者/上級者プレイテスト |

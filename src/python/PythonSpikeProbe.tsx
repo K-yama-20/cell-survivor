@@ -44,7 +44,8 @@ export function PythonSpikeProbe() {
         <p data-status="passed">
           PASS — Pyodide {state.result.pyodideVersion} / {state.result.callCount} calls / load{' '}
           {state.result.loadTimeMs.toFixed(0)} ms / boundaries{' '}
-          {state.result.boundaryTimeMs.toFixed(0)} ms
+          {state.result.boundaryTimeMs.toFixed(0)} ms / continuation{' '}
+          {state.result.continuationBoundaries} boundaries
         </p>
       )}
       {state.status === 'failed' && <p data-status="failed">FAIL — {state.message}</p>}

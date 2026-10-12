@@ -22,18 +22,50 @@ class Controller:
 
     def decide(self, state):
         self.calls += recursive_count(1)
-        if self.calls != state["expected_call"]:
+        if self.calls != state.tick // 6 + 1:
             raise AssertionError("controller state was not preserved")
-        if state.get("fail"):
+        if state.hp == 0:
             raise RuntimeError("deliberate spike failure")
         angle = 0 if self.calls % 2 else math.pi
         move_x, move_y = unit_vector(angle)
         return {
             "move_x": move_x,
             "move_y": move_y,
-            "target_enemy_id": state.get("target_enemy_id"),
+            "target_enemy_id": (
+                None if state.nearest_enemy is None else state.nearest_enemy.id
+            ),
         }
 
 controller = Controller()
+`,
+}
+
+export const pythonContinuationSpikeFiles: PythonFiles = {
+  'main.py': `import os
+import js
+from pyodide.ffi import run_sync
+from microgame import Action, act, get_state, wait_ticks
+
+if hasattr(js, "require") or hasattr(js, "process"):
+    raise RuntimeError("Node.js globals must not be exposed to player Python")
+if os.path.exists("C:/Windows"):
+    raise RuntimeError("Host filesystem must not be mounted into Pyodide")
+try:
+    run_sync(js.fetch("https://example.com"))
+except Exception:
+    pass
+else:
+    raise RuntimeError("External network access must be blocked by CSP")
+
+def nested_loop():
+    local_target = 40
+    frozen_tick = get_state().tick
+    assert get_state().tick == frozen_tick
+    while True:
+        act(Action(target_enemy_id=local_target))
+        local_target += 1
+        wait_ticks(1)
+
+nested_loop()
 `,
 }

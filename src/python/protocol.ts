@@ -1,7 +1,17 @@
 import { z } from 'zod'
 
-const sessionIdSchema = z.string().min(1).max(128)
-const requestIdSchema = z.number().int().nonnegative()
+import {
+  actionDtoSchema,
+  controlModeSchema,
+  createEnvelopeSchema,
+  observationDtoSchema,
+  pythonYieldReasonSchema,
+  workerDiagnosticSchema,
+  type ActionDto,
+  type ObservationDto,
+  type WorkerDiagnostic,
+} from '../shared/contracts'
+
 const pythonFileNameSchema = z
   .string()
   .regex(/^[A-Za-z_][A-Za-z0-9_]*\.py$/, 'Python files must be flat .py modules')
@@ -15,43 +25,42 @@ export const pythonExecutionConfigSchema = z
   })
   .strict()
 
-export const actionSchema = z
-  .object({
-    move_x: z.number().finite().min(-1).max(1),
-    move_y: z.number().finite().min(-1).max(1),
-    target_enemy_id: z.number().int().nonnegative().nullable(),
-  })
-  .strict()
+const initializeRequestSchema = createEnvelopeSchema(
+  'initialize',
+  z
+    .object({
+      runtimeBaseUrl: z.string().url(),
+      files: z.record(pythonFileNameSchema, z.string()),
+      config: pythonExecutionConfigSchema.default({
+        executionBudget: DEFAULT_EXECUTION_BUDGET,
+      }),
+    })
+    .strict(),
+)
 
-const initializeRequestSchema = z.object({
-  sessionId: sessionIdSchema,
-  requestId: requestIdSchema,
-  type: z.literal('initialize'),
-  payload: z.object({
-    runtimeBaseUrl: z.string().url(),
-    files: z.record(pythonFileNameSchema, z.string()),
-    config: pythonExecutionConfigSchema.default({
-      executionBudget: DEFAULT_EXECUTION_BUDGET,
+export const boundaryRequestSchema = createEnvelopeSchema(
+  'boundary',
+  z
+    .object({
+      tick: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+      observation: observationDtoSchema,
+    })
+    .strict()
+    .superRefine((payload, context) => {
+      if (payload.tick !== payload.observation.tick) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['observation', 'tick'],
+          message: 'Envelope tick must match ObservationDTO.tick',
+        })
+      }
     }),
-  }),
-})
+)
 
-const boundaryRequestSchema = z.object({
-  sessionId: sessionIdSchema,
-  requestId: requestIdSchema,
-  type: z.literal('boundary'),
-  payload: z.object({
-    tick: z.number().int().nonnegative(),
-    observation: z.record(z.string(), z.unknown()),
-  }),
-})
-
-const terminateRequestSchema = z.object({
-  sessionId: sessionIdSchema,
-  requestId: requestIdSchema,
-  type: z.literal('terminate'),
-  payload: z.object({}).strict(),
-})
+const terminateRequestSchema = createEnvelopeSchema(
+  'terminate',
+  z.object({}).strict(),
+)
 
 export const pythonWorkerRequestSchema = z.discriminatedUnion('type', [
   initializeRequestSchema,
@@ -59,55 +68,55 @@ export const pythonWorkerRequestSchema = z.discriminatedUnion('type', [
   terminateRequestSchema,
 ])
 
-export const pythonDiagnosticSchema = z.object({
-  kind: z.enum(['protocol', 'python', 'runtime']),
-  name: z.string(),
-  message: z.string(),
-  traceback: z.string().optional(),
-  fileName: z.string().optional(),
-  lineNumber: z.number().int().positive().optional(),
-})
+const initializedResponseSchema = createEnvelopeSchema(
+  'initialized',
+  z
+    .object({
+      pyodideVersion: z.string().min(1),
+      loadTimeMs: z.number().finite().nonnegative(),
+    })
+    .strict(),
+)
 
-const responseEnvelope = {
-  sessionId: sessionIdSchema,
-  requestId: requestIdSchema,
-}
+const boundaryResultResponseSchema = createEnvelopeSchema(
+  'boundary-result',
+  z
+    .object({
+      action: actionDtoSchema,
+      mode: controlModeSchema,
+      yieldReason: pythonYieldReasonSchema,
+      resumeTick: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).nullable(),
+      budgetUsed: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+      diagnostics: z.array(workerDiagnosticSchema),
+    })
+    .strict(),
+)
+
+const terminatedResponseSchema = createEnvelopeSchema(
+  'terminated',
+  z.object({}).strict(),
+)
+
+const diagnosticResponseSchema = createEnvelopeSchema(
+  'diagnostic',
+  workerDiagnosticSchema,
+)
 
 export const pythonWorkerResponseSchema = z.discriminatedUnion('type', [
-  z.object({
-    ...responseEnvelope,
-    type: z.literal('initialized'),
-    payload: z.object({
-      pyodideVersion: z.string(),
-      loadTimeMs: z.number().nonnegative(),
-    }),
-  }),
-  z.object({
-    ...responseEnvelope,
-    type: z.literal('boundary-result'),
-    payload: z.object({
-      action: actionSchema,
-      mode: z.enum(['controller', 'manual']),
-      yieldReason: z.enum(['action', 'wait', 'waiting', 'return', 'decision']),
-      resumeTick: z.number().int().nonnegative().nullable(),
-      budgetUsed: z.number().int().nonnegative(),
-    }),
-  }),
-  z.object({
-    ...responseEnvelope,
-    type: z.literal('terminated'),
-    payload: z.object({}).strict(),
-  }),
-  z.object({
-    ...responseEnvelope,
-    type: z.literal('diagnostic'),
-    payload: pythonDiagnosticSchema,
-  }),
+  initializedResponseSchema,
+  boundaryResultResponseSchema,
+  terminatedResponseSchema,
+  diagnosticResponseSchema,
 ])
 
-export type Action = z.infer<typeof actionSchema>
+export {
+  actionDtoSchema as actionSchema,
+  observationDtoSchema,
+  workerDiagnosticSchema as pythonDiagnosticSchema,
+}
+export type Action = ActionDto
+export type PythonDiagnostic = WorkerDiagnostic
 export type PythonExecutionConfig = z.infer<typeof pythonExecutionConfigSchema>
-export type PythonDiagnostic = z.infer<typeof pythonDiagnosticSchema>
 export type PythonWorkerRequest = z.infer<typeof pythonWorkerRequestSchema>
 export type PythonWorkerResponse = z.infer<typeof pythonWorkerResponseSchema>
 export type PythonFiles = Record<string, string>
@@ -115,3 +124,4 @@ export type PythonBoundaryResult = Extract<
   PythonWorkerResponse,
   { type: 'boundary-result' }
 >['payload']
+export type { ObservationDto }

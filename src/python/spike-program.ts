@@ -22,16 +22,18 @@ class Controller:
 
     def decide(self, state):
         self.calls += recursive_count(1)
-        if self.calls != state["expected_call"]:
+        if self.calls != state.tick // 6 + 1:
             raise AssertionError("controller state was not preserved")
-        if state.get("fail"):
+        if state.hp == 0:
             raise RuntimeError("deliberate spike failure")
         angle = 0 if self.calls % 2 else math.pi
         move_x, move_y = unit_vector(angle)
         return {
             "move_x": move_x,
             "move_y": move_y,
-            "target_enemy_id": state.get("target_enemy_id"),
+            "target_enemy_id": (
+                None if state.nearest_enemy is None else state.nearest_enemy.id
+            ),
         }
 
 controller = Controller()

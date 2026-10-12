@@ -42,6 +42,8 @@
 
 ### Gate A — 最重要: Python実行方式
 
+**結果: Go（Issue 03〜05で検証・契約固定済み）**。Pyodide JSPI方式、決定論的実行予算、実時間watchdog、共有DTO/Envelope契約を採用する。ADR-002〜004を判断記録とする。
+
 - Electron製品相当の実行環境で、**CDNなし**にローカル同梱PyodideをWorkerでロードできる。
 - 同じAIインスタンスの`decide()`を1,000回以上呼び、クラス変数・インスタンス状態が維持される。
 - `while True`内の行動関数が、**ローカル変数と呼び出し状態を保持して次の6 tick判断境界まで自動で中断・再開**できる方式を実証する。任意の`wait_ticks(1)→tick 6`、`wait_ticks(7)→tick 12`も確認する。
@@ -159,11 +161,11 @@ tests/e2e/
 - **目的**: 第一候補ランタイムのオフライン実行と、判断関数型APIの成立性を実測する。
 - **実装**: バージョンを固定してPyodide資産をローカル同梱し、Rendererから専用Workerへ`initialize/boundary/terminate`を送る実験。Pythonの`decide()`、クラス状態、基礎的な標準ライブラリを確認。ロード時間・メモリの観測手順も整備。
 - **受け入れ条件**:
-  - [ ] ネットワークOFFでPython Workerを起動でき、CDNアクセス不要である。
-  - [ ] 同一インスタンスの`decide()`を1,000回以上呼んでも状態が継続し、Actionを返す。
-  - [ ] `math`、関数、クラス、再帰、`main.py`から`utils.py`のimportを検証できる。
-  - [ ] Worker内の例外がアプリ全体を落とさず、ファイル名/行番号等の診断へ変換される。
-  - [ ] PoCコード・計測・確認した制約を`docs/adr/ADR-002-pyodide.md`に残す。
+  - [x] ネットワークOFFでPython Workerを起動でき、CDNアクセス不要である。
+  - [x] 同一インスタンスの`decide()`を1,000回以上呼んでも状態が継続し、Actionを返す。
+  - [x] `math`、関数、クラス、再帰、`main.py`から`utils.py`のimportを検証できる。
+  - [x] Worker内の例外がアプリ全体を落とさず、ファイル名/行番号等の診断へ変換される。
+  - [x] PoCコード・計測・確認した制約を`docs/adr/ADR-002-pyodide.md`に残す。
 - **検証**: Worker統合テスト + オフライン手動検証。
 - **依存**: 01, 02。 **Out of scope**: 本番の完全なゲームループ・任意Pythonの安全性保証。
 
@@ -189,12 +191,13 @@ tests/e2e/
 
 - **目的**: Python/Simulation間のAPI契約を固定し、後続Issueが並行開発可能な境界を作る。
 - **実装**: `ObservationDTO`/`ActionDTO`、`Envelope(sessionId, requestId, type, payload)`、Zod等での検証、型定義、型とログ/エラー仕様のテスト。`microgame`の`Observation`/`Action`への変換契約、実行方式に関するADRを確定。
+- **結果**: `src/shared/contracts.ts`をDTO正本とし、frozen Python型への変換、統一Action検証、protocol/validation/python/budget診断を実装。ADR-004でGate AをGoとして確定。
 - **受け入れ条件**:
-  - [ ] 既存`PYTHON_API.md`の`Vec2`/`EnemyView`/`Observation`/`Action`へ対応するDTOと変換契約がある。
-  - [ ] NaN/Infinity/不正ID/不正型/古いsessionId/不正requestIdが安全に拒否される。
-  - [ ] Controller/Manualで一つのAction表現と制御権ルールを共有する。
-  - [ ] 行動関数の自動待機、任意の`wait_ticks`、実行予算超過をWorker境界で識別できる契約と診断がある。
-  - [ ] Gate AがGoで、ADRと仕様の矛盾が解消されている。
+  - [x] 既存`PYTHON_API.md`の`Vec2`/`EnemyView`/`Observation`/`Action`へ対応するDTOと変換契約がある。
+  - [x] NaN/Infinity/不正ID/不正型/古いsessionId/不正requestIdが安全に拒否される。
+  - [x] Controller/Manualで一つのAction表現と制御権ルールを共有する。
+  - [x] 行動関数の自動待機、任意の`wait_ticks`、実行予算超過をWorker境界で識別できる契約と診断がある。
+  - [x] Gate AがGoで、ADRと仕様の矛盾が解消されている。
 - **検証**: JSON転送・スキーマ境界・型契約の単体テスト。
 - **依存**: 03, 04。 **Out of scope**: ゲーム世界の描画や戦闘実装。
 

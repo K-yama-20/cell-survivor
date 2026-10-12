@@ -3,11 +3,30 @@
 import { loadPyodide } from 'pyodide'
 import { describe, expect, it, vi } from 'vitest'
 
+import { observationDtoSchema } from '../shared/contracts'
 import type { PythonWorkerResponse } from './protocol'
 import { nextPythonBoundaryTick, PythonRuntime } from './python-runtime'
 import { createPythonWorkerHandler } from './worker-handler'
 
 describe('synchronous Python continuation spike', () => {
+  const observation = (tick: number, enemyIds: readonly number[] = []) => {
+    const enemies = enemyIds.map((id, index) => ({
+      id,
+      kind: 'chaser' as const,
+      position: { x: index + 1, y: 0 },
+      hp: 10,
+      distance: index + 1,
+    }))
+    return observationDtoSchema.parse({
+      tick,
+      hp: 100,
+      max_hp: 100,
+      position: { x: 0, y: 0 },
+      enemies,
+      nearest_enemy_id: enemies[0]?.id ?? null,
+    })
+  }
+
   it('rounds optional waits to the next six-tick decision boundary', () => {
     expect(nextPythonBoundaryTick(0, 1)).toBe(6)
     expect(nextPythonBoundaryTick(0, 6)).toBe(6)
@@ -46,18 +65,12 @@ nested_loop()
         { executionBudget: 5_000 },
       )
 
-      const observation = {
-        enemies: [
-          { id: 9, distance: 30 },
-          { id: 7, distance: 10 },
-        ],
-      }
-      const at0 = await runtime.boundary(0, observation)
-      const at6 = await runtime.boundary(6, observation)
-      const at12 = await runtime.boundary(12, observation)
-      const at18 = await runtime.boundary(18, observation)
-      const at24 = await runtime.boundary(24, observation)
-      const at30 = await runtime.boundary(30, observation)
+      const at0 = await runtime.boundary(0, observation(0, [7, 8, 9]))
+      const at6 = await runtime.boundary(6, observation(6, [7, 8, 9]))
+      const at12 = await runtime.boundary(12, observation(12, [7, 8, 9]))
+      const at18 = await runtime.boundary(18, observation(18, [7, 8, 9]))
+      const at24 = await runtime.boundary(24, observation(24, [7, 8, 9]))
+      const at30 = await runtime.boundary(30, observation(30, [7, 8, 9]))
 
       expect(at0).toMatchObject({
         action: { target_enemy_id: 7 },
@@ -119,16 +132,15 @@ def recurse(value):
     return recurse(value + 1)
 
 def decide(state):
-    pattern = state["pattern"]
-    if pattern == "loop":
+    if state.tick == 0:
         value = 0
         while True:
             value += 1
-    if pattern == "recursion":
+    if state.tick == 6:
         recurse(0)
-    if pattern == "computation":
+    if state.tick == 12:
         sum(value * value for value in range(100000))
-    if pattern == "wait":
+    if state.tick == 18:
         wait_ticks(6)
     return {"move_x": 0, "move_y": 0, "target_enemy_id": None}
 `,
@@ -136,25 +148,25 @@ def decide(state):
         },
       })
 
-      for (const [index, pattern] of ['loop', 'recursion', 'computation'].entries()) {
+      for (const index of [0, 1, 2]) {
         await handle({
           sessionId: 'budget',
           requestId: index + 2,
           type: 'boundary',
-          payload: { tick: index * 6, observation: { pattern } },
+          payload: { tick: index * 6, observation: observation(index * 6) },
         })
       }
       await handle({
         sessionId: 'budget',
         requestId: 5,
         type: 'boundary',
-        payload: { tick: 18, observation: { pattern: 'wait' } },
+        payload: { tick: 18, observation: observation(18) },
       })
       await handle({
         sessionId: 'budget',
         requestId: 6,
         type: 'boundary',
-        payload: { tick: 24, observation: { pattern: 'normal' } },
+        payload: { tick: 24, observation: observation(24) },
       })
 
       const diagnostics = responses.filter((response) => response.type === 'diagnostic')
@@ -162,13 +174,18 @@ def decide(state):
       for (const diagnostic of diagnostics.slice(0, 3)) {
         expect(diagnostic).toMatchObject({
           payload: {
-            kind: 'python',
+            kind: 'budget',
+            code: 'EXECUTION_BUDGET_EXCEEDED',
             name: 'ExecutionBudgetExceeded',
           },
         })
       }
       expect(diagnostics[3]).toMatchObject({
-        payload: { kind: 'python', name: 'ControlModeError' },
+        payload: {
+          kind: 'python',
+          code: 'CONTROL_MODE_ERROR',
+          name: 'ControlModeError',
+        },
       })
       expect(responses.at(-1)).toMatchObject({
         type: 'boundary-result',
@@ -212,8 +229,8 @@ while True:
         { executionBudget: 2_000 },
       )
 
-      const at0 = await runtime.boundary(0, {})
-      const at6 = await runtime.boundary(6, {})
+      const at0 = await runtime.boundary(0, observation(0, [1, 2]))
+      const at6 = await runtime.boundary(6, observation(6, [1, 2]))
 
       expect(at0).toMatchObject({
         mode: 'controller',
@@ -226,6 +243,51 @@ while True:
         yieldReason: 'decision',
         action: { target_enemy_id: 2 },
         resumeTick: 12,
+      })
+    },
+    30_000,
+  )
+
+  it(
+    'converts the DTO to frozen public Python types and reports an invalid Action as no-action',
+    async () => {
+      const pyodide = await loadPyodide()
+      const runtime = new PythonRuntime(pyodide)
+      runtime.initialize(
+        {
+          'main.py': `from dataclasses import FrozenInstanceError
+from microgame import Action, EnemyView, Observation, Vec2
+
+def decide(state):
+    assert isinstance(state, Observation)
+    assert isinstance(state.position, Vec2)
+    assert isinstance(state.enemies, tuple)
+    assert isinstance(state.nearest_enemy, EnemyView)
+    try:
+        state.hp = 0
+    except FrozenInstanceError:
+        pass
+    else:
+        raise AssertionError("Observation must be frozen")
+    return Action(move_x=float("nan"), target_enemy_id=state.nearest_enemy.id)
+`,
+        },
+        { executionBudget: 2_000 },
+      )
+
+      const result = await runtime.boundary(0, observation(0, [1]))
+
+      expect(result).toMatchObject({
+        action: { move_x: 0, move_y: 0, target_enemy_id: null },
+        mode: 'controller',
+        yieldReason: 'decision',
+        diagnostics: [
+          {
+            kind: 'validation',
+            code: 'INVALID_ACTION',
+            severity: 'warning',
+          },
+        ],
       })
     },
     30_000,

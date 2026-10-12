@@ -2,6 +2,7 @@ import {
   DEFAULT_EXECUTION_BUDGET,
   DEFAULT_WATCHDOG_MS,
   pythonWorkerResponseSchema,
+  pythonWorkerRequestSchema,
   type Action,
   type PythonBoundaryResult,
   type PythonDiagnostic,
@@ -10,6 +11,11 @@ import {
   type PythonWorkerRequest,
   type PythonWorkerResponse,
 } from './protocol'
+import {
+  observationDtoSchema,
+  sessionIdSchema,
+  type ObservationDto,
+} from '../shared/contracts'
 
 type PendingRequest = Readonly<{
   resolve: (response: PythonWorkerResponse) => void
@@ -78,7 +84,7 @@ export class PythonWorkerClient {
     this.#sessionIdFactory = options.sessionIdFactory ?? (() => crypto.randomUUID())
     this.#watchdogMs = options.watchdogMs ?? DEFAULT_WATCHDOG_MS
     this.#worker = options.worker ?? this.#workerFactory()
-    this.#sessionId = this.#sessionIdFactory()
+    this.#sessionId = sessionIdSchema.parse(this.#sessionIdFactory())
     this.#attachWorkerListeners()
   }
 
@@ -102,12 +108,13 @@ export class PythonWorkerClient {
 
   async boundary(
     tick: number,
-    observation: Readonly<Record<string, unknown>>,
+    observation: ObservationDto,
   ): Promise<PythonBoundaryResult> {
+    const parsedObservation = observationDtoSchema.parse(observation)
     const response = await this.#send(
       {
         type: 'boundary',
-        payload: { tick, observation },
+        payload: { tick, observation: parsedObservation },
       },
       this.#watchdogMs,
     )
@@ -117,7 +124,7 @@ export class PythonWorkerClient {
     return response.payload
   }
 
-  async decide(observation: Readonly<Record<string, unknown>>): Promise<Action> {
+  async decide(observation: ObservationDto): Promise<Action> {
     const tick = this.#nextTick
     this.#nextTick += 6
     return (await this.boundary(tick, observation)).action
@@ -136,7 +143,7 @@ export class PythonWorkerClient {
     if (!this.#stopped) this.#hardStop(new Error('Python Worker restarting'))
 
     this.#worker = this.#workerFactory()
-    this.#sessionId = this.#sessionIdFactory()
+    this.#sessionId = sessionIdSchema.parse(this.#sessionIdFactory())
     this.#requestId = 0
     this.#nextTick = 0
     this.#stopped = false
@@ -162,7 +169,11 @@ export class PythonWorkerClient {
   ): Promise<PythonWorkerResponse> {
     if (this.#stopped) return Promise.reject(new Error('Python Worker is stopped'))
     const requestId = ++this.#requestId
-    const message = { ...request, sessionId: this.#sessionId, requestId }
+    const message = pythonWorkerRequestSchema.parse({
+      ...request,
+      sessionId: this.#sessionId,
+      requestId,
+    })
     return new Promise((resolve, reject) => {
       const timer =
         timeoutMs === undefined
@@ -183,6 +194,15 @@ export class PythonWorkerClient {
   }
 
   readonly #handleMessage = (event: MessageEvent<unknown>): void => {
+    if (
+      typeof event.data === 'object' &&
+      event.data !== null &&
+      'sessionId' in event.data &&
+      typeof event.data.sessionId === 'string' &&
+      event.data.sessionId !== this.#sessionId
+    ) {
+      return
+    }
     const parsed = pythonWorkerResponseSchema.safeParse(event.data)
     if (!parsed.success) {
       this.#hardStop(new Error('Python Worker returned an invalid response'))

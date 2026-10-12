@@ -1,9 +1,9 @@
 # PYTHON_API.md — Micro Survivor（仮題）プレイヤー向けPython API仕様
 
-> **ステータス**: MVP公開API設計 v0.2（2026-10-10）
+> **ステータス**: MVP公開API契約 v0.3（2026-10-13）
 > **関連文書**: [PRODUCT.md](./PRODUCT.md) / [GAME_DESIGN.md](./GAME_DESIGN.md) / [ARCHITECTURE.md](./ARCHITECTURE.md)  
 > **対象**: ゲーム内エディタから書く**本物のPython**とゲームの間の公開契約。  
-> **重要**: ここに記した公開API全体はMVP契約案だが、行動関数の同期的な自動待機、`wait_ticks()`の追加待機、決定論的な実行予算と停止はIssue #4で技術成立を確認済み。実装方式と残存リスクは`docs/adr/ADR-003-python-continuations.md`を参照。
+> **重要**: 行動関数の同期的な自動待機、`wait_ticks()`の追加待機、決定論的な実行予算と停止はIssue #4で技術成立を確認済み。公開データ型とWorker転送契約はIssue #5で固定した。実装方式と残存リスクは`docs/adr/ADR-003-python-continuations.md`、DTO境界は`docs/adr/ADR-004-shared-contracts.md`を参照。
 
 ---
 
@@ -170,7 +170,7 @@ while True:
 
 ## 4. 公開データ型（MVP）
 
-> 型注釈は設計上の公開契約。実際には`@dataclass(frozen=True)`等の読み取り専用Pythonオブジェクトとして実装予定。転送用DTOの内部構造と公開Python型は区別する。
+> `Vec2` / `EnemyView` / `Observation` / `Action`は`@dataclass(frozen=True)`の読み取り専用Pythonオブジェクトとして実装する。転送用DTOの内部構造と公開Python型は区別する。
 
 ### 4.1 `Vec2`
 
@@ -291,6 +291,15 @@ Action()                                     # 移動なし・標的なし
 
 無効Actionは行動を壊さない**入力検証警告**として扱い、Python例外そのものとは区別する。ゲーム側でActionを構造検証し、Pythonからのオブジェクトをそのままシミュレーションメモリへ渡さない。
 
+### 4.6 DTO変換契約
+
+- TypeScript側の正本は`src/shared/contracts.ts`のZodスキーマと推論型。
+- `ObservationDTO.nearest_enemy_id`は、Python側で同じ`enemies`タプル内の`EnemyView`参照である`Observation.nearest_enemy`へ変換する。
+- `enemies`は正の一意IDで昇順に並べ、`nearest_enemy_id`は距離最小（同距離ならID最小）の生存敵と一致させる。
+- 座標、距離、移動入力は有限値だけを許可する。`Action.move_x` / `move_y`は任意の有限値を受け入れ、長さが1を超える場合の正規化はSimulation側で行う。
+- `ActionDTO.target_enemy_id`は正整数または`null`。現在のObservationに存在しない、またはHP 0の対象はAction全体を無行動へ置換し、`INVALID_ACTION`警告を返す。
+- DTOはJSON値だけで構成し、PythonオブジェクトやSimulation内部参照をWorker境界越しに渡さない。
+
 ---
 
 ## 5. 関数リファレンス
@@ -409,6 +418,8 @@ class ExecutionBudgetExceeded(GameAPIError): ...
 - `InvalidActionWarning`はユーザーへ返す**診断イベント名**の案であり、必ずしもPython内に投げる例外ではない。
 - 重大な実行時エラーはゲームを停止し、**ファイル名・行番号・例外型・内容・現在tick**を表示する。
 - Code Editorはエラー行を強調表示できること。
+
+Worker診断は`kind` / 安定した`code` / `severity` / `name` / `message`を持つ。実行予算超過は`kind="budget"`・`code="EXECUTION_BUDGET_EXCEEDED"`、制御権競合は`code="CONTROL_MODE_ERROR"`、無効Actionは停止を伴わない`severity="warning"`・`code="INVALID_ACTION"`として区別する。行動による自動待機と明示的な待機は、正常応答の`yieldReason="action"` / `"wait"`および`resumeTick`で識別する。
 
 ### 6.2 `print`・デバッグ
 

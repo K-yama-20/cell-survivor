@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { createEmptyObservationDto } from '../shared/contracts'
 import {
   PythonWorkerClient,
   PythonWorkerWatchdogError,
@@ -26,7 +27,7 @@ class FakeWorker {
       type: string
     }
     if (request.type === 'initialize') {
-      this.#emit({
+      this.emit({
         sessionId: request.sessionId,
         requestId: request.requestId,
         type: 'initialized',
@@ -39,7 +40,7 @@ class FakeWorker {
     this.terminated = true
   }
 
-  #emit(data: unknown): void {
+  emit(data: unknown): void {
     const event = { data } as MessageEvent<unknown>
     for (const listener of this.#listeners.get('message') ?? []) listener(event)
   }
@@ -68,7 +69,7 @@ describe('Python Worker watchdog and restart', () => {
       executionBudget: 100,
     })
 
-    const boundary = client.boundary(0, {})
+    const boundary = client.boundary(0, createEmptyObservationDto(0))
     const rejected = expect(boundary).rejects.toBeInstanceOf(PythonWorkerWatchdogError)
     await vi.advanceTimersByTimeAsync(50)
     await rejected
@@ -83,5 +84,33 @@ describe('Python Worker watchdog and restart', () => {
       type: 'initialize',
       payload: { files },
     })
+  })
+
+  it('ignores a late response from an old session before validating its payload', async () => {
+    const worker = new FakeWorker()
+    const client = new PythonWorkerClient({
+      worker: worker as unknown as Worker,
+      sessionIdFactory: () => 'current-session',
+    })
+    await client.initialize({ 'main.py': 'pass' }, 'app://bundle/pyodide/')
+
+    const pending = client.boundary(0, createEmptyObservationDto(0))
+    worker.emit({ sessionId: 'old-session', malformed: true })
+    expect(worker.terminated).toBe(false)
+    worker.emit({
+      sessionId: 'current-session',
+      requestId: 2,
+      type: 'boundary-result',
+      payload: {
+        action: { move_x: 0, move_y: 0, target_enemy_id: null },
+        mode: 'manual',
+        yieldReason: 'return',
+        resumeTick: null,
+        budgetUsed: 0,
+        diagnostics: [],
+      },
+    })
+
+    await expect(pending).resolves.toMatchObject({ yieldReason: 'return' })
   })
 })

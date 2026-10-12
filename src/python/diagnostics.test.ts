@@ -13,6 +13,8 @@ RuntimeError: deliberate failure`),
 
     expect(diagnostic).toMatchObject({
       kind: 'python',
+      code: 'PYTHON_EXCEPTION',
+      severity: 'error',
       name: 'RuntimeError',
       message: 'deliberate failure',
       fileName: 'main.py',
@@ -29,7 +31,9 @@ ExecutionBudgetExceeded: Python execution budget of 100 trace events was exceede
     )
 
     expect(diagnostic).toMatchObject({
-      kind: 'python',
+      kind: 'budget',
+      code: 'EXECUTION_BUDGET_EXCEEDED',
+      severity: 'error',
       name: 'ExecutionBudgetExceeded',
       message: 'Python execution budget of 100 trace events was exceeded',
     })

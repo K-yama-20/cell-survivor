@@ -61,7 +61,6 @@ def disable_budget():
 export const microgameModuleSource = `
 from dataclasses import asdict, dataclass, is_dataclass
 import json
-from types import SimpleNamespace
 
 from pyodide.ffi import run_sync
 import microgame_bridge as _bridge
@@ -88,6 +87,25 @@ class Vec2:
 
 
 @dataclass(frozen=True)
+class EnemyView:
+    id: int
+    kind: str
+    position: Vec2
+    hp: int
+    distance: float
+
+
+@dataclass(frozen=True)
+class Observation:
+    tick: int
+    hp: int
+    max_hp: int
+    position: Vec2
+    enemies: tuple[EnemyView, ...]
+    nearest_enemy: EnemyView | None
+
+
+@dataclass(frozen=True)
 class Action:
     move_x: float = 0.0
     move_y: float = 0.0
@@ -105,30 +123,52 @@ class Action:
         return Action(dx, dy, attack_target_id)
 
 
-_observation = {}
+_observation = Observation(0, 1, 1, Vec2(0.0, 0.0), (), None)
 _controller = None
 
 
-def _to_view(value):
-    if isinstance(value, dict):
-        return SimpleNamespace(**{key: _to_view(item) for key, item in value.items()})
-    if isinstance(value, list):
-        return tuple(_to_view(item) for item in value)
-    return value
+def _to_observation(value):
+    enemies = tuple(
+        EnemyView(
+            id=enemy["id"],
+            kind=enemy["kind"],
+            position=Vec2(**enemy["position"]),
+            hp=enemy["hp"],
+            distance=enemy["distance"],
+        )
+        for enemy in value["enemies"]
+    )
+    nearest_id = value["nearest_enemy_id"]
+    nearest = next((enemy for enemy in enemies if enemy.id == nearest_id), None)
+    return Observation(
+        tick=value["tick"],
+        hp=value["hp"],
+        max_hp=value["max_hp"],
+        position=Vec2(**value["position"]),
+        enemies=enemies,
+        nearest_enemy=nearest,
+    )
 
 
 def _set_context(context_json):
     global _observation
     context = json.loads(str(context_json))
-    _observation = context["observation"]
+    _observation = _to_observation(context["observation"])
 
 
-def _action_dict(action):
+def _action_value(action):
     if is_dataclass(action):
         return asdict(action)
-    if isinstance(action, dict):
-        return action
-    raise TypeError("act(action) requires an Action")
+    return action
+
+
+def _action_json(action):
+    try:
+        return json.dumps(
+            _action_value(action), separators=(",", ":"), allow_nan=False
+        )
+    except (TypeError, ValueError):
+        return "null"
 
 
 def _ensure_action_allowed():
@@ -147,7 +187,7 @@ def _suspend(kind, action_json, ticks):
 
 def act(action):
     _ensure_action_allowed()
-    payload = json.dumps(_action_dict(action), separators=(",", ":"))
+    payload = _action_json(action)
     _suspend("action", payload, 6)
 
 
@@ -161,7 +201,7 @@ def wait_ticks(n):
 
 def get_state():
     _consume()
-    return _to_view(_observation)
+    return _observation
 
 
 def self_position():
@@ -170,11 +210,7 @@ def self_position():
 
 
 def nearest_enemy():
-    state = get_state()
-    enemies = getattr(state, "enemies", ())
-    if not enemies:
-        return None
-    return min(enemies, key=lambda enemy: (enemy.distance, enemy.id))
+    return get_state().nearest_enemy
 
 
 def attack_nearest():
@@ -206,6 +242,10 @@ def _controller_callable():
     if hasattr(candidate, "decide"):
         candidate = candidate.decide
     return candidate
+
+
+def _current_observation():
+    return _observation
 `
 
 export const pythonBootstrapSource = `
@@ -231,7 +271,6 @@ if _microgame_candidate is not None:
 
 export const pythonControllerBoundarySource = `
 import json
-from dataclasses import asdict, is_dataclass
 import _microgame_runtime
 import microgame
 
@@ -243,13 +282,11 @@ try:
     if not callable(_microgame_controller):
         raise TypeError("Controller must define decide(state) or be callable")
     _microgame_controller_result = _microgame_controller(
-        json.loads(_microgame_observation_json)
+        microgame._current_observation()
     )
-    if is_dataclass(_microgame_controller_result):
-        _microgame_controller_result = asdict(_microgame_controller_result)
     _microgame_controller_json = json.dumps(
         {
-            "action": _microgame_controller_result,
+            "actionJson": microgame._action_json(_microgame_controller_result),
             "budgetUsed": _microgame_runtime.budget_used(),
         },
         separators=(",", ":"),

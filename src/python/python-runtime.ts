@@ -1,12 +1,18 @@
 import type { PyodideInterface } from 'pyodide'
 
 import {
-  actionSchema,
   type Action,
   type PythonBoundaryResult,
   type PythonExecutionConfig,
   type PythonFiles,
 } from './protocol'
+import {
+  NO_ACTION,
+  observationDtoSchema,
+  validateActionDto,
+  type ObservationDto,
+  type WorkerDiagnostic,
+} from '../shared/contracts'
 import {
   microgameModuleSource,
   pythonBootstrapSource,
@@ -36,10 +42,13 @@ type Deferred<T> = Readonly<{
 
 const projectDirectory = '/home/pyodide/project'
 const decisionIntervalTicks = 6
-const noAction: Action = Object.freeze({
-  move_x: 0,
-  move_y: 0,
-  target_enemy_id: null,
+const emptyObservation: ObservationDto = observationDtoSchema.parse({
+  tick: 0,
+  hp: 1,
+  max_hp: 1,
+  position: { x: 0, y: 0 },
+  enemies: [],
+  nearest_enemy_id: null,
 })
 
 export function nextPythonBoundaryTick(currentTick: number, waitTicks: number): number {
@@ -85,7 +94,7 @@ function toPlainValue(value: unknown): unknown {
 
 function contextJson(
   tick: number,
-  observation: Readonly<Record<string, unknown>>,
+  observation: ObservationDto,
 ): string {
   return JSON.stringify({ tick, observation: { ...observation, tick } })
 }
@@ -98,8 +107,9 @@ export class PythonRuntime {
   #controllerRegistered = false
   #controllerExecuting = false
   #currentTick = 0
-  #currentObservation: Readonly<Record<string, unknown>> = {}
-  #lastAction: Action = noAction
+  #currentObservation: ObservationDto = emptyObservation
+  #lastAction: Action = NO_ACTION
+  #boundaryDiagnostics: WorkerDiagnostic[] = []
   #resumeTick: number | null = null
   #resume: ((context: string) => void) | undefined
   #event: Deferred<RuntimeEvent> | undefined
@@ -160,7 +170,7 @@ _microgame_runtime.configure(${config.executionBudget})
 
   async boundary(
     tick: number,
-    observation: Readonly<Record<string, unknown>>,
+    observation: ObservationDto,
   ): Promise<PythonBoundaryResult> {
     if (!this.#initialized) throw new Error('Python runtime is not initialized')
     if (tick % decisionIntervalTicks !== 0) {
@@ -170,8 +180,14 @@ _microgame_runtime.configure(${config.executionBudget})
       throw new Error('Python boundary ticks must be monotonic')
     }
 
+    const parsedObservation = observationDtoSchema.parse(observation)
+    if (parsedObservation.tick !== tick) {
+      throw new Error('Python boundary tick must match ObservationDTO.tick')
+    }
+
     this.#currentTick = tick
-    this.#currentObservation = { ...observation, tick }
+    this.#currentObservation = parsedObservation
+    this.#boundaryDiagnostics = []
 
     let manualEvent: RuntimeEvent | undefined
     if (!this.#started) {
@@ -195,6 +211,7 @@ _microgame_runtime.configure(${config.executionBudget})
         yieldReason: manualEvent.reason,
         resumeTick: manualEvent.resumeTick,
         budgetUsed: manualEvent.budgetUsed,
+        diagnostics: this.#boundaryDiagnostics,
       }
     }
 
@@ -204,6 +221,7 @@ _microgame_runtime.configure(${config.executionBudget})
       yieldReason: this.#finished ? 'return' : 'waiting',
       resumeTick: this.#resumeTick,
       budgetUsed: 0,
+      diagnostics: this.#boundaryDiagnostics,
     }
   }
 
@@ -246,10 +264,6 @@ _microgame_runtime.configure(${config.executionBudget})
       '_microgame_boundary_context_json',
       contextJson(this.#currentTick, this.#currentObservation),
     )
-    this.#pyodide.globals.set(
-      '_microgame_observation_json',
-      JSON.stringify(this.#currentObservation),
-    )
     this.#controllerExecuting = true
     let rawResult: unknown
     try {
@@ -271,10 +285,14 @@ _microgame_runtime.configure(${config.executionBudget})
       throw new Error('Controller boundary did not return JSON')
     }
     const parsed = JSON.parse(rawResult) as {
-      action: unknown
+      actionJson: unknown
       budgetUsed: unknown
     }
-    this.#lastAction = actionSchema.parse(parsed.action)
+    const actionValue =
+      typeof parsed.actionJson === 'string'
+        ? this.#parseActionJson(parsed.actionJson)
+        : null
+    this.#setAction(actionValue)
     if (!Number.isInteger(parsed.budgetUsed) || Number(parsed.budgetUsed) < 0) {
       throw new Error('Controller returned an invalid budget count')
     }
@@ -284,6 +302,7 @@ _microgame_runtime.configure(${config.executionBudget})
       yieldReason: 'decision',
       resumeTick: this.#resumeTick,
       budgetUsed: Number(parsed.budgetUsed),
+      diagnostics: this.#boundaryDiagnostics,
     }
   }
 
@@ -303,7 +322,7 @@ _microgame_runtime.configure(${config.executionBudget})
     }
     if (kind === 'action') {
       if (typeof actionJson !== 'string') throw new Error('Action payload must be JSON')
-      this.#lastAction = actionSchema.parse(JSON.parse(actionJson))
+      this.#setAction(this.#parseActionJson(actionJson))
     }
 
     const nextTick = nextPythonBoundaryTick(this.#currentTick, Number(ticks))
@@ -318,6 +337,20 @@ _microgame_runtime.configure(${config.executionBudget})
       budgetUsed: Number(budgetUsed),
     })
     return suspension
+  }
+
+  #parseActionJson(actionJson: string): unknown {
+    try {
+      return JSON.parse(actionJson)
+    } catch {
+      return null
+    }
+  }
+
+  #setAction(value: unknown): void {
+    const result = validateActionDto(value, this.#currentObservation)
+    this.#lastAction = result.action
+    this.#boundaryDiagnostics.push(...result.diagnostics)
   }
 
   #prepareEvent(): Deferred<RuntimeEvent> {

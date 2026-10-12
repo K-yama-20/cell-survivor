@@ -1,6 +1,6 @@
 # ARCHITECTURE.md — Micro Survivor（仮題）技術アーキテクチャ
 
-> **ステータス**: MVP技術設計 v0.1（2026-10-09）  
+> **ステータス**: MVP技術設計 v0.2（2026-10-13）
 > **関連文書**: [PRODUCT.md](./PRODUCT.md) / [GAME_DESIGN.md](./GAME_DESIGN.md) / [PYTHON_API.md](./PYTHON_API.md)  
 > **目的**: 「どのモジュールが何を担当するか」「データがどこを通るか」「何をテストで保証するか」を定義し、Issue分割・Codex実装時の判断基準にする。  
 > **表記**: **[確定]**=合意済み要件、**[設計決定案]**=この文書で提案する具体方式、**[Spike必須]**=実装着手前の技術検証事項。技術選定は、Spikeの結果により見直す。
@@ -14,7 +14,7 @@
 | 製品 | Windows 64-bit向けSteam販売を見据えたオフラインPCゲーム [確定] |
 | 世界 | スライム1体 / 細菌 / 1ステージ / 60秒生存 [確定] |
 | 描画・アプリ | Electron + React + Phaserを第一候補、Monaco Editorを採用する案 [確定：第一候補] |
-| Python | プレイヤーが本物のPythonを可能な範囲で使う。Pyodide第一候補 [確定：要件、方式は検証待ち] |
+| Python | Pyodide 314.0.7をローカル同梱し、Web Worker + JSPIで本物のPythonを実行する [確定：Issue #3〜#5 / Gate A Go] |
 | AI | `decide(state)`判断関数型と、行動関数が次の6 tick境界まで自動待機する継続実行型を両方使える [確定：要件] |
 | 時間 | 固定30 tick/秒、AI判断境界は6 tickごと、1800 tickで60秒 [既存GAME_DESIGNの初期値案] |
 | RNG | ステージ固有seed固定。MVPにseed変更UIはない [確定] |
@@ -131,7 +131,7 @@ tick 1800: 結果確定（最終tickの被害でHP0なら失敗）
 
 **barrier規則**: Python応答を待っている間に、ゲームtickは進めない。CPU速度の違いでActionが適用されるtickをずらさない。実時間のtimeoutはゲームルールではなく異常終了条件とする。
 
-### 4.3 メッセージ例（TypeScript、概念契約）
+### 4.3 メッセージ契約（TypeScript）
 
 ```ts
 type Envelope<T> = {
@@ -165,14 +165,25 @@ type ActionDTO = {
 
 `ObservationDTO.nearest_enemy_id`は転送用。Python側ではこれを`state.nearest_enemy: EnemyView | None`として公開する。転送プロトコルとPythonユーザーAPIの表現を混同しない。
 
+上記DTOとEnvelopeの正本は`src/shared/contracts.ts`、Python Worker固有のdiscriminated unionは`src/python/protocol.ts`である。境界では次を保証する。
+
+- `sessionId`は空白や制御文字を含まない1〜128文字の識別子、`requestId`は1から単調増加する安全な整数。
+- entity IDは正の安全な整数。敵はID昇順かつ重複なしで、`nearest_enemy_id`は距離最小（同距離ならID最小）と一致する。
+- 数値DTOはNaN / Infinityを拒否する。ObservationのHP範囲、型、余分なキー、Envelope tickとの一致も検証する。
+- `ActionDTO`の移動成分は任意の有限値。長さ1超過の正規化はSimulationの責務であり、スキーマで各成分を`[-1, 1]`へ丸めたり拒否したりしない。
+- `target_enemy_id`が現在のObservationに存在しない、または死亡済みならAction全体を無行動へ置換し、`INVALID_ACTION`警告を境界結果へ添付する。
+- Python側ではDTOをfrozen `Vec2` / `EnemyView` / `Observation`へコピーし、`enemies`をタプル化する。ControllerとManualの返り値は同じ`ActionDTO`検証経路を通す。
+
 ```text
 Renderer → Simulation Worker: init(seed), advance(actions, count), reset(), snapshot()
 Renderer → Python Worker: initialize(files, config), boundary(tick, observation), terminate()
-Python Worker → Renderer: boundary_result(action, mode, yieldReason, resumeTick, budgetUsed), diagnostic(...)
+Python Worker → Renderer: boundary_result(action, mode, yieldReason, resumeTick, budgetUsed, diagnostics), diagnostic(...)
 Simulation Worker → Renderer: state_snapshot(...), game_result(...)
 ```
 
-すべてのメッセージはスキーマ検証する。古い`sessionId`、重複`requestId`、未来tickのAction、未知のメッセージ型は破棄/エラーとする。大量のログはまとめて送信し、UIを詰まらせない。
+すべてのメッセージはスキーマ検証する。Workerは古い`sessionId`と重複・逆行する`requestId`を安定したprotocol診断で拒否し、Renderer clientは再起動前の古いsession応答をpayload検証前に破棄する。未知のメッセージ型や壊れた現行session応答はWorkerを安全停止する。正常境界の`yieldReason`は`action`（自動待機）、`wait`（任意待機）、`waiting`、`return`、`decision`を区別する。大量のログはまとめて送信し、UIを詰まらせない。
+
+詳細な採用理由、無効値の処理、依存方向は[ADR-004](./adr/ADR-004-shared-contracts.md)を正とする。
 
 ---
 
@@ -421,10 +432,11 @@ micro-survivor/
 | ADR候補 | 現状 | 決定に必要な証拠 |
 |---|---|---|
 | ADR-001 Electron + React + Phaser | 第一候補 | Windowsオフライン起動、UI/2Dパフォーマンス |
-| ADR-002 Pyodide Web Worker | 第一候補 | moduleロード、isolated runner、Python自由度 |
+| ADR-002 Pyodide Web Worker | **Accepted / Issue #3技術Go** | moduleロード、isolated runner、Python自由度 |
 | ADR-003 行動自動待機・継続実行・実行予算 | **Accepted / Issue #4技術Go** | JSPI同期行動API、任意`wait_ticks`、trace event予算、watchdog |
-| ADR-004 Sim Worker / fixed tick | 本書の設計決定案 | 同一Action列で再現・性能測定 |
-| ADR-005 安全モデル | **未決・販売前必須** | レンダラー/Worker権限確認、悪意あるPythonテスト |
+| ADR-004 Python / Simulation共有契約 | **Accepted / Issue #5 / Gate A Go** | DTO、Envelope、異常値、Python変換、統一診断 |
+| ADR-005 Sim Worker / fixed tick | 本書の設計決定案 | 同一Action列で再現・性能測定 |
+| ADR-006 安全モデル | **未決・販売前必須** | レンダラー/Worker権限確認、悪意あるPythonテスト |
 
 **実装を始める順**: (1) Pythonの判断関数 + Worker → (2) 同期継続実行Spike → (3) Game Core + bridge → (4) UI/保存 → (5) Windows配布。Spike結果によって設計の変更が必要なら、この文書と`PYTHON_API.md`を同じPRで改訂する。
 

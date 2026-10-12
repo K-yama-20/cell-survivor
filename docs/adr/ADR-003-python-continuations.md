@@ -3,7 +3,7 @@
 - **Status**: Accepted — Issue #4 技術Go
 - **Date**: 2026-10-10
 - **Decision owners**: Micro Survivor project
-- **Related**: Issue #4 / Gate A、[ADR-002](./ADR-002-pyodide.md)、[PYTHON_API.md](../PYTHON_API.md)
+- **Related**: Issue #4 / Gate A、[ADR-002](./ADR-002-pyodide.md)、[ADR-004](./ADR-004-shared-contracts.md)、[PYTHON_API.md](../PYTHON_API.md)
 
 ## Context
 
